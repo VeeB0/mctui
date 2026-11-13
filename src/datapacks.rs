@@ -1,7 +1,7 @@
 //! Датапаки основного мира: `<level>/datapacks/` (включены) и `<level>/datapacks.disabled/` (выключены).
 //! Модуль без UI: скан, метаданные, признаки содержимого и перенос между папками.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -105,6 +105,76 @@ pub fn set_enabled(d: &DatapackInfo, enabled: bool, level_dir: &Path) -> Result<
     std::fs::create_dir_all(&dir).map_err(|_| anyhow::anyhow!(fail()))?;
     std::fs::rename(&d.path, &to).map_err(|_| anyhow::anyhow!(fail()))?;
     Ok(to)
+}
+
+/// Проверка обновлений zip-датапаков на Modrinth (загрузчик `datapack`).
+pub fn check_updates(items: &[DatapackInfo], game_version: Option<&str>) -> Result<crate::plugins::HashCheck> {
+    let loaders: Vec<String> = DATAPACK_LOADERS.iter().map(|s| s.to_string()).collect();
+    let files: Vec<(PathBuf, String, Vec<String>)> = items
+        .iter()
+        .filter(|d| d.is_zip && !d.sha1.is_empty())
+        .map(|d| (d.path.clone(), d.sha1.clone(), loaders.clone()))
+        .collect();
+    crate::plugins::check_hashes_with(&crate::plugins::post_json, &files, game_version)
+}
+
+/// Заменяет zip-датапак новой версией под тем же именем и в той же папке; старый уходит в
+/// `datapacks.disabled/.pechka-old/`. Возвращает путь к новому файлу.
+pub fn apply_update(d: &DatapackInfo, u: &crate::plugins::UpdateInfo, level_dir: &Path) -> Result<PathBuf> {
+    apply_update_with(d, u, level_dir, crate::plugins::download)
+}
+
+fn apply_update_with(
+    d: &DatapackInfo,
+    u: &crate::plugins::UpdateInfo,
+    level_dir: &Path,
+    fetch: impl Fn(&str, &Path) -> Result<()>,
+) -> Result<PathBuf> {
+    if !d.is_zip {
+        bail!(crate::tr!("обновлять можно только zip-датапаки", "only zip datapacks can be updated"));
+    }
+    let name = &d.file_name;
+    let fail = || {
+        crate::tr!(
+            format!("не удалось перенести {name}: остановите сервер и повторите"),
+            format!("failed to move {name}: stop the server and try again")
+        )
+    };
+    let tmp_dir = level_dir.join(DISABLED_DIR);
+    std::fs::create_dir_all(&tmp_dir)?;
+    // Без расширения .zip — игра не подхватит недокачанный файл.
+    let tmp = tmp_dir.join(format!(".pechka-download-{}.part", std::process::id()));
+    let res = (|| -> Result<PathBuf> {
+        fetch(&u.url, &tmp)?;
+        let actual = crate::plugins::sha1_file(&tmp)?;
+        if let Some(expected) = &u.sha1
+            && !expected.eq_ignore_ascii_case(&actual)
+        {
+            bail!(crate::tr!(
+                format!("контрольная сумма не совпала (ожидалось {expected}, получено {actual})"),
+                format!("checksum mismatch (expected {expected}, got {actual})")
+            ));
+        }
+        zip::ZipArchive::new(std::fs::File::open(&tmp)?)
+            .context(crate::tr!("скачанный файл — не zip", "downloaded file is not a zip"))?;
+
+        let old_dir = tmp_dir.join(crate::plugins::OLD_DIR);
+        std::fs::create_dir_all(&old_dir).map_err(|_| anyhow::anyhow!(fail()))?;
+        let mut backup = old_dir.join(name);
+        let mut n = 0;
+        while backup.symlink_metadata().is_ok() {
+            n += 1;
+            backup = old_dir.join(format!("{name}.{n}"));
+        }
+        std::fs::rename(&d.path, &backup).map_err(|_| anyhow::anyhow!(fail()))?;
+        if std::fs::rename(&tmp, &d.path).is_err() {
+            let _ = std::fs::rename(&backup, &d.path);
+            bail!(fail());
+        }
+        Ok(d.path.clone())
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    res
 }
 
 /// `Data.DataPacks.Disabled` из `level.dat` (пусто, если файла или списка нет).
@@ -397,5 +467,96 @@ mod tests {
         assert!(set_enabled(&d, false, &level).is_err());
         assert_eq!(std::fs::read_to_string(level.join("datapacks/a.zip")).unwrap(), "one");
         assert_eq!(std::fs::read_to_string(level.join("datapacks.disabled/a.zip")).unwrap(), "two");
+    }
+
+    fn zip_bytes(body: &str) -> Vec<u8> {
+        let t = TempDir::new("zb");
+        let p = t.0.join("x.zip");
+        make_zip(&p, &[("pack.mcmeta", body)]);
+        std::fs::read(&p).unwrap()
+    }
+
+    fn info_for(level: &Path, name: &str) -> DatapackInfo {
+        scan(level).into_iter().find(|d| d.file_name == name).unwrap()
+    }
+
+    fn upd(sha1: Option<String>) -> crate::plugins::UpdateInfo {
+        crate::plugins::UpdateInfo {
+            version: "2".into(),
+            file_name: "a-2.zip".into(),
+            url: "https://x/a-2.zip".into(),
+            sha1,
+            page: String::new(),
+        }
+    }
+
+    #[test]
+    fn apply_update_keeps_name_and_backup() {
+        let t = TempDir::new("upd");
+        let level = t.0.join("world");
+        make_zip(&level.join("datapacks/a.zip"), &[("pack.mcmeta", "{\"pack\":{\"description\":\"old\"}}")]);
+        let old = std::fs::read(level.join("datapacks/a.zip")).unwrap();
+        let new1 = zip_bytes("{\"pack\":{\"description\":\"new1\"}}");
+        let new2 = zip_bytes("{\"pack\":{\"description\":\"new2\"}}");
+
+        let d = info_for(&level, "a.zip");
+        let b = new1.clone();
+        let p = apply_update_with(&d, &upd(None), &level, |_, dest| Ok(std::fs::write(dest, &b)?)).unwrap();
+        assert_eq!(p, level.join("datapacks/a.zip"));
+        assert_eq!(std::fs::read(&p).unwrap(), new1);
+        assert_eq!(std::fs::read(level.join("datapacks.disabled/.pechka-old/a.zip")).unwrap(), old);
+
+        let d = info_for(&level, "a.zip");
+        let b = new2.clone();
+        apply_update_with(&d, &upd(None), &level, |_, dest| Ok(std::fs::write(dest, &b)?)).unwrap();
+        assert_eq!(std::fs::read(level.join("datapacks/a.zip")).unwrap(), new2);
+        assert_eq!(std::fs::read(level.join("datapacks.disabled/.pechka-old/a.zip")).unwrap(), old);
+        assert_eq!(std::fs::read(level.join("datapacks.disabled/.pechka-old/a.zip.1")).unwrap(), new1);
+    }
+
+    #[test]
+    fn apply_update_works_for_disabled_pack() {
+        let t = TempDir::new("updoff");
+        let level = t.0.join("world");
+        make_zip(&level.join("datapacks.disabled/a.zip"), &[("pack.mcmeta", "{}")]);
+        let new = zip_bytes("{\"pack\":{}}");
+        let d = info_for(&level, "a.zip");
+        let p = apply_update_with(&d, &upd(None), &level, |_, dest| Ok(std::fs::write(dest, &new)?)).unwrap();
+        assert_eq!(p, level.join("datapacks.disabled/a.zip"));
+        assert!(!level.join("datapacks/a.zip").exists());
+    }
+
+    #[test]
+    fn apply_update_rejects_bad_checksum() {
+        let t = TempDir::new("badsum");
+        let level = t.0.join("world");
+        make_zip(&level.join("datapacks/a.zip"), &[("pack.mcmeta", "{}")]);
+        let old = std::fs::read(level.join("datapacks/a.zip")).unwrap();
+        let new = zip_bytes("{\"pack\":{}}");
+        let d = info_for(&level, "a.zip");
+        let r = apply_update_with(&d, &upd(Some("0".repeat(40))), &level, |_, dest| Ok(std::fs::write(dest, &new)?));
+        assert!(r.is_err());
+        assert_eq!(std::fs::read(level.join("datapacks/a.zip")).unwrap(), old);
+        let left: Vec<_> = std::fs::read_dir(level.join("datapacks.disabled"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".part"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn apply_update_rejects_non_zip_download_and_folders() {
+        let t = TempDir::new("nonzip");
+        let level = t.0.join("world");
+        make_zip(&level.join("datapacks/a.zip"), &[("pack.mcmeta", "{}")]);
+        write(&level.join("datapacks/B/pack.mcmeta"), "{}");
+        let d = info_for(&level, "a.zip");
+        assert!(apply_update_with(&d, &upd(None), &level, |_, dest| Ok(std::fs::write(dest, b"nope")?)).is_err());
+        assert!(level.join("datapacks/a.zip").is_file());
+        assert!(!level.join("datapacks.disabled/.pechka-old").exists());
+        let b = info_for(&level, "B");
+        assert!(apply_update_with(&b, &upd(None), &level, |_, _| Ok(())).is_err());
     }
 }

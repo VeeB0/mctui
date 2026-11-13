@@ -633,31 +633,53 @@ pub fn check_updates_with(
     game_version: Option<&str>,
     plugin_loaders: Option<&[&str]>,
 ) -> Result<HashMap<PathBuf, UpdateInfo>> {
-    let plugins: Vec<&PluginInfo> = plugins.iter().filter(|p| !p.sha1.is_empty()).collect();
-    if plugins.is_empty() {
-        return Ok(HashMap::new());
+    let files: Vec<(PathBuf, String, Vec<String>)> = plugins
+        .iter()
+        .filter(|p| !p.sha1.is_empty())
+        .map(|p| {
+            let ls = match plugin_loaders {
+                Some(ls) if p.loaders() == PLUGIN_LOADERS => ls,
+                _ => p.loaders(),
+            };
+            (p.path.clone(), p.sha1.clone(), ls.iter().map(|s| s.to_string()).collect())
+        })
+        .collect();
+    Ok(check_hashes_with(&post_json, &files, game_version)?.updates)
+}
+
+/// Результат проверки по хэшам: обновления и известная Modrinth версия установленного файла.
+#[derive(Debug, Default, Clone)]
+pub struct HashCheck {
+    pub updates: HashMap<PathBuf, UpdateInfo>,
+    /// `version_number` установленного файла, если Modrinth его знает.
+    pub current: HashMap<PathBuf, String>,
+}
+
+pub(crate) type PostFn<'a> = &'a dyn Fn(&str, &serde_json::Value) -> Result<String>;
+
+/// Ядро проверки: `files` — `(путь, sha1, загрузчики)`; файлы без sha1 пропускаются.
+pub(crate) fn check_hashes_with(
+    post: PostFn,
+    files: &[(PathBuf, String, Vec<String>)],
+    game_version: Option<&str>,
+) -> Result<HashCheck> {
+    let files: Vec<&(PathBuf, String, Vec<String>)> = files.iter().filter(|f| !f.1.is_empty()).collect();
+    if files.is_empty() {
+        return Ok(HashCheck::default());
     }
-    let loaders_of = |p: &PluginInfo| -> Vec<String> {
-        let ls = match plugin_loaders {
-            Some(ls) if p.loaders() == PLUGIN_LOADERS => ls,
-            _ => p.loaders(),
-        };
-        ls.iter().map(|s| s.to_string()).collect()
-    };
 
     // Один запрос на набор загрузчиков.
     let mut groups: Vec<(Vec<String>, Vec<String>)> = Vec::new();
-    for p in &plugins {
-        let loaders = loaders_of(p);
-        let idx = match groups.iter().position(|(l, _)| *l == loaders) {
+    for (_, sha1, loaders) in &files {
+        let idx = match groups.iter().position(|(l, _)| l == loaders) {
             Some(i) => i,
             None => {
-                groups.push((loaders, Vec::new()));
+                groups.push((loaders.clone(), Vec::new()));
                 groups.len() - 1
             }
         };
-        if !groups[idx].1.contains(&p.sha1) {
-            groups[idx].1.push(p.sha1.clone());
+        if !groups[idx].1.contains(sha1) {
+            groups[idx].1.push(sha1.clone());
         }
     }
     let mut latest: HashMap<(Vec<String>, String), MrVersion> = HashMap::new();
@@ -666,13 +688,13 @@ pub fn check_updates_with(
         if let Some(gv) = game_version.map(str::trim).filter(|g| !g.is_empty()) {
             body["game_versions"] = serde_json::json!([gv]);
         }
-        let resp = parse_versions_response(&post_json(&format!("{MODRINTH_API}/version_files/update"), &body)?)?;
+        let resp = parse_versions_response(&post(&format!("{MODRINTH_API}/version_files/update"), &body)?)?;
         for (hash, v) in resp {
             latest.insert((loaders.clone(), hash.to_ascii_lowercase()), v);
         }
     }
     if latest.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(HashCheck::default());
     }
 
     // Установленные версии — чтобы не предлагать «обновление» на более старую.
@@ -681,18 +703,21 @@ pub fn check_updates_with(
     known.dedup();
     let body = serde_json::json!({ "hashes": known, "algorithm": "sha1" });
     let current: HashMap<String, MrVersion> =
-        parse_versions_response(&post_json(&format!("{MODRINTH_API}/version_files"), &body)?)?
+        parse_versions_response(&post(&format!("{MODRINTH_API}/version_files"), &body)?)?
             .into_iter()
             .map(|(h, v)| (h.to_ascii_lowercase(), v))
             .collect();
 
-    let mut out = HashMap::new();
-    for p in plugins {
-        let key = (loaders_of(p), p.sha1.to_ascii_lowercase());
-        if let Some(l) = latest.get(&key)
-            && let Some(u) = pick_update(&key.1, l, current.get(&key.1))
+    let mut out = HashCheck::default();
+    for (path, sha1, loaders) in files {
+        let hash = sha1.to_ascii_lowercase();
+        if let Some(c) = current.get(&hash) {
+            out.current.insert(path.clone(), c.version_number.clone());
+        }
+        if let Some(l) = latest.get(&(loaders.clone(), hash.clone()))
+            && let Some(u) = pick_update(&hash, l, current.get(&hash))
         {
-            out.insert(p.path.clone(), u);
+            out.updates.insert(path.clone(), u);
         }
     }
     Ok(out)
@@ -1037,5 +1062,40 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].version.as_deref(), Some(u.version.as_str()));
         assert!(check_updates(&after, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn check_hashes_reports_current_and_updates() {
+        use std::cell::RefCell;
+        let bodies: RefCell<Vec<(String, String)>> = RefCell::new(vec![]);
+        let post = |url: &str, body: &serde_json::Value| -> Result<String> {
+            bodies.borrow_mut().push((url.to_string(), body.to_string()));
+            if url.ends_with("/version_files/update") {
+                Ok(r#"{"h1":{"id":"v2","project_id":"P","version_number":"2.0","date_published":"2026-02-01T00:00:00Z",
+                    "files":[{"url":"https://x/n.zip","filename":"n.zip","primary":true,"hashes":{"sha1":"h2"}}]}}"#
+                    .to_string())
+            } else if url.ends_with("/version_files") {
+                Ok(r#"{"h1":{"id":"v1","project_id":"P","version_number":"1.0","date_published":"2026-01-01T00:00:00Z",
+                    "files":[{"url":"https://x/o.zip","filename":"o.zip","primary":true,"hashes":{"sha1":"h1"}}]}}"#
+                    .to_string())
+            } else {
+                bail!("unexpected url {url}")
+            }
+        };
+        let files = vec![
+            (PathBuf::from("a.zip"), "h1".to_string(), vec!["datapack".to_string()]),
+            (PathBuf::from("b.zip"), "h9".to_string(), vec!["datapack".to_string()]),
+            (PathBuf::from("c.zip"), String::new(), vec!["datapack".to_string()]),
+        ];
+        let r = check_hashes_with(&post, &files, Some("1.21.4")).unwrap();
+        assert_eq!(r.updates[&PathBuf::from("a.zip")].version, "2.0");
+        assert_eq!(r.current[&PathBuf::from("a.zip")], "1.0");
+        assert!(!r.updates.contains_key(&PathBuf::from("b.zip")));
+        assert!(!r.current.contains_key(&PathBuf::from("b.zip")));
+        assert!(!r.current.contains_key(&PathBuf::from("c.zip")));
+        let bodies = bodies.borrow();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0].1.contains(r#""loaders":["datapack"]"#), "{}", bodies[0].1);
+        assert!(bodies[0].1.contains(r#""game_versions":["1.21.4"]"#));
     }
 }
