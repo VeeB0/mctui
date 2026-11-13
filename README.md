@@ -9,6 +9,12 @@
 curl -fsSL https://github.com/VeeB0/mctui/releases/latest/download/install.sh | sh
 ```
 
+**Homebrew (macOS / Linux):**
+```bash
+brew install VeeB0/mctui/mctui
+```
+Обновление — `brew upgrade mctui` (не `mctui update`: бинарником управляет brew).
+
 **Windows 10 / 11** (PowerShell):
 ```powershell
 irm https://github.com/VeeB0/mctui/releases/latest/download/install.ps1 | iex
