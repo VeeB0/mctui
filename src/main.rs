@@ -8,6 +8,8 @@ mod event;
 mod i18n;
 mod input;
 mod log;
+#[allow(dead_code)] // подключается к интерфейсу отдельно
+mod plugins;
 mod properties;
 mod server;
 mod setup;
