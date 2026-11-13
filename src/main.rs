@@ -11,6 +11,7 @@ mod event;
 mod i18n;
 mod input;
 mod log;
+mod playerstats;
 mod plugins;
 mod properties;
 mod proto;
@@ -19,6 +20,7 @@ mod service;
 mod setup;
 mod ui;
 mod update;
+mod world;
 
 use anyhow::Result;
 use crossterm::event::{
