@@ -128,5 +128,6 @@ The UI is available in English: it follows the system language, or set `language
 ```bash
 cargo test
 ```
-Релиз: поднять `version` в `Cargo.toml`, затем `git tag vX.Y.Z && git push origin main vX.Y.Z` — GitHub Actions
-соберёт бинарники для всех платформ, опубликует их в Releases и обновит формулу в `VeeB0/homebrew-mctui`.
+Релиз: перенести пункты из `## [Unreleased]` в `CHANGELOG.md` в раздел `## [X.Y.Z] — дата`, поднять
+`version` в `Cargo.toml`, затем `git tag vX.Y.Z && git push origin main vX.Y.Z` — GitHub Actions
+соберёт бинарники для всех платформ, опубликует их в Releases (описание — из `CHANGELOG.md`) и обновит формулу в `VeeB0/homebrew-mctui`.

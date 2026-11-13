@@ -1,6 +1,7 @@
 name: Release
 
-# Выпуск: git tag v0.2.0 && git push --tags
+# Выпуск: раздел ## [X.Y.Z] в CHANGELOG.md, version в Cargo.toml, затем
+# git tag vX.Y.Z && git push origin main vX.Y.Z. Описание релиза берётся из CHANGELOG.md.
 on:
   push:
     tags: ["v*"]
@@ -36,6 +37,7 @@ jobs:
         run: |
           v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml v$v"; exit 1; }
+          scripts/changelog-section.sh "$v" > /dev/null
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         shell: bash
@@ -60,13 +62,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: scripts/changelog-section.sh "${GITHUB_REF_NAME}" > release-notes.md && cat release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*
             install.sh
             install.ps1
-          generate_release_notes: true
+          body_path: release-notes.md
 
   # Обновляет формулу в tap VeeB0/homebrew-mctui (brew install VeeB0/mctui/mctui).
   # Нужен секрет HOMEBREW_TAP_DEPLOY_KEY — приватный SSH-ключ, добавленный в tap как
