@@ -673,18 +673,17 @@ fn draw_settings(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         })
         .collect();
     match &s.props {
-        Some(props) => rows.extend(props.pairs().into_iter().map(|(k, v)| {
-            let shown = if k.contains("password") && !v.is_empty() {
-                "••••••••".to_string()
-            } else {
-                v.clone()
-            };
+        Some(_) => rows.extend(app.prop_rows().into_iter().map(|(k, v)| {
+            let doc = crate::propdocs::doc(&k);
+            let secret = doc.is_some_and(|d| d.secret) || k.contains("password");
+            let shown = if secret && !v.is_empty() { "••••••••".to_string() } else { v.clone() };
             let color = match v.as_str() {
                 "true" => theme::OK,
                 "false" => theme::MUTED,
                 _ => theme::TEXT,
             };
-            Row::new(vec![Span::styled(k, Style::new().fg(theme::TEXT)), Span::styled(shown, Style::new().fg(color))])
+            let key_color = if doc.is_some_and(|d| d.important) { theme::TEXT } else { theme::MUTED };
+            Row::new(vec![Span::styled(k, Style::new().fg(key_color)), Span::styled(shown, Style::new().fg(color))])
         })),
         None => {
             let msg = match (&s.props_error, s.cfg.kind) {
@@ -706,11 +705,49 @@ fn draw_settings(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     } else {
         tr!("Настройки", "Settings")
     };
+    let outer = block(title, focused);
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+    let [table_area, help_area] = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
     let table = Table::new(rows, [Constraint::Percentage(50), Constraint::Percentage(50)])
-        .block(block(title, focused))
         .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
     let mut st = TableState::default().with_selected(focused.then_some(app.settings_sel));
-    f.render_stateful_widget(table, area, &mut st);
+    f.render_stateful_widget(table, table_area, &mut st);
+    // Описание выбранного параметра
+    let help: Line = match app.selected_setting_pub() {
+        Some(Err((k, _))) => match crate::propdocs::doc(&k) {
+            Some(d) => {
+                let mut v = vec![Span::styled(d.description().to_string(), Style::new().fg(theme::TEXT))];
+                if d.effect == crate::propdocs::Effect::NewWorld {
+                    v.push(Span::styled(
+                        tr!("  · действует только для нового мира", "  · only affects a new world"),
+                        Style::new().fg(theme::WARN),
+                    ));
+                }
+                if d.legacy {
+                    v.push(Span::styled(
+                        tr!("  · из старых версий", "  · from older versions"),
+                        Style::new().fg(theme::MUTED),
+                    ));
+                }
+                Line::from(v)
+            }
+            None => Line::styled(tr!("нет описания", "no description"), Style::new().fg(theme::MUTED)),
+        },
+        Some(Ok(_)) => Line::styled(
+            tr!("Настройка mctui (хранится в servers.toml)", "mctui setting (stored in servers.toml)"),
+            Style::new().fg(theme::MUTED),
+        ),
+        None => Line::raw(""),
+    };
+    if focused {
+        f.render_widget(
+            Paragraph::new(help).wrap(Wrap { trim: true }).block(
+                Block::new().borders(ratatui::widgets::Borders::TOP).border_style(Style::new().fg(theme::BORDER)),
+            ),
+            help_area,
+        );
+    }
 }
 
 fn draw_backups(app: &App, f: &mut Frame, area: Rect, focused: bool) {

@@ -638,6 +638,9 @@ impl App {
     }
 
     fn set_property(&mut self, key: &str, value: &str) {
+        if let Err(e) = crate::propdocs::validate(key, value) {
+            return self.toast(format!("{key}: {e}"), ToastKind::Error);
+        }
         let s = self.sel_mut();
         let Some(props) = &mut s.props else { return };
         props.set(key, value);
@@ -1711,6 +1714,19 @@ impl App {
         self.sel().players.get(self.players_sel).cloned()
     }
 
+    /// Пары server.properties в порядке показа: важные первыми (см. propdocs::sort_rank).
+    pub fn prop_rows(&self) -> Vec<(String, String)> {
+        let Some(p) = self.sel().props.as_ref() else { return vec![] };
+        let mut v = p.pairs();
+        v.sort_by(|a, b| (crate::propdocs::sort_rank(&a.0), &a.0).cmp(&(crate::propdocs::sort_rank(&b.0), &b.0)));
+        v
+    }
+
+    /// Выбранная строка вкладки «Настройки»: опция mctui или пара server.properties.
+    pub fn selected_setting_pub(&self) -> Option<Result<Opt, (String, String)>> {
+        self.selected_setting()
+    }
+
     /// Выбранная строка вкладки «Настройки»: опция mctui или пара server.properties.
     fn selected_setting(&self) -> Option<Result<Opt, (String, String)>> {
         let opts = self.opts();
@@ -1718,7 +1734,7 @@ impl App {
             return Some(Ok(opts[self.settings_sel]));
         }
         let i = self.settings_sel - opts.len();
-        self.sel().props.as_ref()?.pairs().into_iter().nth(i).map(Err)
+        self.prop_rows().into_iter().nth(i).map(Err)
     }
 
     fn content_char(&mut self, c: char) {
@@ -1745,13 +1761,12 @@ impl App {
             Tab::Settings => match c {
                 ' ' => match self.selected_setting() {
                     Some(Ok(o)) => self.toggle_opt(o),
-                    Some(Err((k, v))) => match v.as_str() {
-                        "true" => self.set_property(&k, "false"),
-                        "false" => self.set_property(&k, "true"),
-                        _ => self.toast(
+                    Some(Err((k, v))) => match crate::propdocs::next_choice(&k, &v) {
+                        Some(next) => self.set_property(&k, &next),
+                        None => self.toast(
                             tr!(
-                                "пробел переключает только true/false; Enter — редактировать",
-                                "Space toggles only true/false; Enter edits"
+                                "пробел переключает да/нет и варианты из списка; Enter — редактировать",
+                                "Space cycles yes/no and listed choices; Enter edits"
                             ),
                             ToastKind::Info,
                         ),
