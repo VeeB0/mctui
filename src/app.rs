@@ -287,7 +287,25 @@ pub struct PluginsView {
     pub checking: bool,
     pub checked: bool,
     pub busy: Option<String>,
+    /// Что умеет ядро сервера; определяется только при перечитывании списка.
+    pub core: Option<AddonsCore>,
     loaded_for: Option<usize>,
+}
+
+/// Что ядро сервера принимает во вкладке «Дополнения».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddonsCore {
+    Plugins,
+    Mods,
+    Vanilla,
+}
+
+/// Пояснение для ванильного ядра: плагины и моды ему недоступны.
+pub fn vanilla_addons_text() -> &'static str {
+    tr!(
+        "Ванильное ядро не поддерживает плагины и моды — только датапаки",
+        "The vanilla core supports no plugins or mods — only datapacks"
+    )
 }
 
 /// Подвкладка вкладки «Дополнения».
@@ -439,6 +457,7 @@ impl App {
                 checking: false,
                 checked: false,
                 busy: None,
+                core: None,
                 loaded_for: None,
             },
             addons: AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs },

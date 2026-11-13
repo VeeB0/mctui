@@ -753,6 +753,51 @@ async fn datapack_search_works_without_core() {
     });
 }
 
+fn addons_screen(a: &mut App) -> String {
+    key(a, '4');
+    render(a, 160, 30)
+}
+
+#[tokio::test]
+async fn fabric_without_mods_is_called_mods() {
+    let srv = TempServer::new("fabric-mods");
+    std::fs::write(srv.0.join("fabric-server-launch.jar"), b"").unwrap();
+    std::fs::create_dir_all(srv.0.join("mods")).unwrap();
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        let screen = addons_screen(&mut a);
+        assert!(screen.contains("Mods (0)"), "{screen}");
+        assert!(screen.contains("No mods · i to find and install"), "{screen}");
+    });
+}
+
+#[tokio::test]
+async fn paper_is_called_plugins() {
+    let srv = paper_search("paper-plugins");
+    std::fs::create_dir_all(srv.0.join("plugins")).unwrap();
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        let screen = addons_screen(&mut a);
+        assert!(screen.contains("Plugins (0)"), "{screen}");
+        assert!(!screen.contains("No mods"), "{screen}");
+    });
+}
+
+#[tokio::test]
+async fn vanilla_says_only_datapacks() {
+    let srv = TempServer::new("vanilla-addons");
+    crate::datapacks::tests::make_zip(&srv.0.join("server.jar"), &[("version.json", r#"{"id":"26.3"}"#)]);
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        let screen = addons_screen(&mut a);
+        let text = "The vanilla core supports no plugins or mods — only datapacks";
+        assert!(screen.contains(text), "{screen}");
+        key(&mut a, 'i');
+        assert!(a.popup.is_none());
+        assert_eq!(toast_text(&a), text);
+    });
+}
+
 fn paper_search(tag: &str) -> TempServer {
     let srv = TempServer::new(tag);
     std::fs::write(srv.0.join("paper.jar"), b"").unwrap();

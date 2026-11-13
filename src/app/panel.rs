@@ -220,6 +220,9 @@ impl App {
         let target = match sub {
             AddonsSub::Datapacks => Target::new(ps::Platform::Datapack, s.version.as_deref()),
             AddonsSub::Plugins => {
+                if self.plugins.core == Some(AddonsCore::Vanilla) {
+                    return self.toast(vanilla_addons_text(), ToastKind::Info);
+                }
                 let hint = s.cfg.command.join(" ");
                 let Some(target) = Target::detect(s.cfg.dir(), &hint, s.version.as_deref()) else {
                     return self.toast(
