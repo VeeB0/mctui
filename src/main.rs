@@ -454,7 +454,10 @@ async fn run(
     let client = client::start(cfg_path.clone(), default_config, tx.clone());
     let mut app = app::App::new(cfg_path, client, tx);
     let mut events = EventStream::new();
+    // Перерисовка не чаще раза в 50 мс и только когда что-то изменилось: пока `dirty == false`,
+    // ветка таймера выключена и окно не просыпается впустую.
     let mut frame_tick = tokio::time::interval(Duration::from_millis(50));
+    frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut sec_tick = tokio::time::interval(Duration::from_secs(1));
     let mut dirty = true;
 
@@ -471,12 +474,10 @@ async fn run(
             },
             Some(ev) = rx.recv() => { app.on_event(ev); dirty = true; }
             _ = sec_tick.tick() => { app.on_tick(); dirty = true; }
-            _ = frame_tick.tick() => {
-                if dirty {
-                    app.area = terminal.size().map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height)).unwrap_or_default();
-                    terminal.draw(|f| ui::draw(&app, f))?;
-                    dirty = false;
-                }
+            _ = frame_tick.tick(), if dirty => {
+                app.area = terminal.size().map(|s| ratatui::layout::Rect::new(0, 0, s.width, s.height)).unwrap_or_default();
+                terminal.draw(|f| ui::draw(&app, f))?;
+                dirty = false;
             }
         }
         if app.should_quit {

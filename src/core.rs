@@ -10,6 +10,7 @@ use crate::server::stats::{self, PlayerEvent};
 use crate::server::{PlayersSource, RconState, ServerState, Status, rcon_task};
 use crate::tr;
 use chrono::{Local, TimeZone};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -19,6 +20,10 @@ const RESPONSE_WINDOW: Duration = Duration::from_millis(1500);
 const SAMPLE_EVERY: Duration = Duration::from_secs(60);
 const HISTORY_CAP: usize = 24 * 60;
 const HISTORY_SAVE_EVERY: Duration = Duration::from_secs(600);
+/// Как часто заново искать дочерние процессы серверов полным обходом всех процессов системы. Между
+/// обходами каждую секунду обновляются только уже найденные процессы серверов — полный обход
+/// (сотни процессов) стоил службе ~3% ядра постоянно.
+const TREE_RESCAN_EVERY: Duration = Duration::from_secs(30);
 /// За сколько секунд до рестарта по расписанию предупреждать игроков.
 const RESTART_WARNINGS: [u64; 10] = [900, 300, 60, 30, 10, 5, 4, 3, 2, 1];
 
@@ -46,6 +51,9 @@ pub struct Manager {
     rcon_seq: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
     sys: Option<sysinfo::System>,
+    /// Процессы каждого сервера (корень → он сам и все потомки) по последнему полному обходу.
+    proc_trees: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    last_tree_scan: Option<Instant>,
     last_history_save: Instant,
     last_disk_check: Option<Instant>,
 }
@@ -66,6 +74,8 @@ impl Manager {
             rcon_seq: 0,
             tx,
             sys: sysinfo::System::new().ok(),
+            proc_trees: HashMap::new(),
+            last_tree_scan: None,
             last_history_save: Instant::now(),
             last_disk_check: None,
         };
@@ -1288,19 +1298,22 @@ impl Manager {
     /// CPU/RAM считаются по всему дереву процессов: скрипт запуска (sh, cmd) + java.
     fn refresh_resources(&mut self) {
         let Some(sys) = &mut self.sys else { return };
-        if self.servers.iter().all(|s| s.proc.is_none()) {
+        let roots: Vec<sysinfo::Pid> =
+            self.servers.iter().filter_map(|s| s.proc.as_ref()).map(|p| sysinfo::Pid::from_u32(p.pid)).collect();
+        if roots.is_empty() {
+            self.proc_trees.clear();
             return;
         }
-        sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            true,
-            sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory(),
-        );
-        let mut children: std::collections::HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = Default::default();
-        for (pid, p) in sys.processes() {
-            if let Some(parent) = p.parent() {
-                children.entry(parent).or_default().push(*pid);
-            }
+        let now = Instant::now();
+        let kind = sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory();
+        if needs_tree_rescan(self.last_tree_scan, now, &roots, &self.proc_trees) {
+            self.last_tree_scan = Some(now);
+            sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, kind);
+            let parents = sys.processes().iter().filter_map(|(pid, p)| p.parent().map(|parent| (*pid, parent)));
+            self.proc_trees = process_trees(&roots, parents);
+        } else {
+            let pids: Vec<sysinfo::Pid> = self.proc_trees.values().flatten().copied().collect();
+            sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&pids), true, kind);
         }
         for s in &mut self.servers {
             let Some(p) = &s.proc else { continue };
@@ -1309,14 +1322,10 @@ impl Manager {
                 continue;
             }
             let (mut cpu, mut mem) = (0f32, 0u64);
-            let mut stack = vec![root];
-            while let Some(pid) = stack.pop() {
-                if let Some(pr) = sys.process(pid) {
+            for pid in self.proc_trees.get(&root).map(Vec::as_slice).unwrap_or(&[]) {
+                if let Some(pr) = sys.process(*pid) {
                     cpu += pr.cpu_usage();
                     mem += pr.memory();
-                }
-                if let Some(c) = children.get(&pid) {
-                    stack.extend(c);
                 }
             }
             s.cpu = Some(cpu);
@@ -1327,6 +1336,44 @@ impl Manager {
             }
         }
     }
+}
+
+/// Нужен полный обход процессов: давно не было или появился сервер, чьё дерево ещё не искали.
+fn needs_tree_rescan(
+    last: Option<Instant>,
+    now: Instant,
+    roots: &[sysinfo::Pid],
+    trees: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+) -> bool {
+    last.is_none_or(|t| now.duration_since(t) >= TREE_RESCAN_EVERY) || roots.iter().any(|r| !trees.contains_key(r))
+}
+
+/// Для каждого корня — он сам и все его потомки по парам (процесс, родитель).
+fn process_trees(
+    roots: &[sysinfo::Pid],
+    parents: impl IntoIterator<Item = (sysinfo::Pid, sysinfo::Pid)>,
+) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+    let mut children: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+    for (pid, parent) in parents {
+        children.entry(parent).or_default().push(pid);
+    }
+    roots
+        .iter()
+        .map(|&root| {
+            let mut tree = vec![];
+            let mut stack = vec![root];
+            while let Some(pid) = stack.pop() {
+                if tree.contains(&pid) {
+                    continue; // на случай цикла из-за повторно выданного pid
+                }
+                tree.push(pid);
+                if let Some(c) = children.get(&pid) {
+                    stack.extend(c);
+                }
+            }
+            (root, tree)
+        })
+        .collect()
 }
 
 /// Свободное место на диске, где лежит `dir` (самая длинная подходящая точка монтирования).
@@ -1382,6 +1429,33 @@ pub fn human_bytes(b: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pid(n: usize) -> sysinfo::Pid {
+        sysinfo::Pid::from(n)
+    }
+
+    #[test]
+    fn process_trees_collect_descendants() {
+        // 10 → 11 → 12, 10 → 13; 20 — другой сервер; 30 — чужой процесс; 40 ↔ 41 — цикл
+        let parents = [(11, 10), (12, 11), (13, 10), (21, 20), (31, 30), (41, 40), (40, 41)];
+        let t = process_trees(&[pid(10), pid(20), pid(40), pid(99)], parents.map(|(c, p)| (pid(c), pid(p))));
+        let mut a = t[&pid(10)].clone();
+        a.sort();
+        assert_eq!(a, vec![pid(10), pid(11), pid(12), pid(13)]);
+        assert_eq!(t[&pid(20)], vec![pid(20), pid(21)]);
+        assert_eq!(t[&pid(40)].len(), 2);
+        assert_eq!(t[&pid(99)], vec![pid(99)]);
+    }
+
+    #[test]
+    fn tree_rescan_schedule() {
+        let now = Instant::now();
+        let trees: HashMap<_, _> = [(pid(10), vec![pid(10)])].into();
+        assert!(needs_tree_rescan(None, now, &[pid(10)], &trees), "first time");
+        assert!(!needs_tree_rescan(Some(now), now + Duration::from_secs(5), &[pid(10)], &trees));
+        assert!(needs_tree_rescan(Some(now), now + TREE_RESCAN_EVERY, &[pid(10)], &trees), "periodic");
+        assert!(needs_tree_rescan(Some(now), now + Duration::from_secs(1), &[pid(10), pid(20)], &trees), "new server");
+    }
 
     #[test]
     fn next_restart_time() {
