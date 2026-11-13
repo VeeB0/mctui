@@ -5,6 +5,7 @@
 use super::*;
 use crate::network::{Facts, HintLevel};
 use crate::plugin_search::{self as ps, InstallPlan, SearchHit, Target};
+use crate::plugins::PluginKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -196,33 +197,52 @@ impl App {
         );
     }
 
-    // ───────────────────────────── поиск плагинов ─────────────────────────────
+    // ───────────────────────────── поиск плагинов и датапаков ─────────────────────────────
 
-    pub(super) fn open_plugin_search(&mut self) {
+    /// Поиск для подвкладки «Дополнений»: плагины/моды — под ядро сервера, датапаки — под версию игры
+    /// (ядро им не важно, поэтому работает и на ванильном сервере).
+    pub(super) fn open_addon_search(&mut self, sub: AddonsSub) {
         let s = self.sel();
         if !s.is_local() {
             return;
         }
-        let hint = s.cfg.command.join(" ");
-        let Some(target) = Target::detect(s.cfg.dir(), &hint, s.version.as_deref()) else {
-            return self.toast(
-                tr!(
-                    "Не удалось понять ядро сервера (Paper / Fabric / …) — поиск недоступен",
-                    "Could not tell the server core (Paper / Fabric / …) — search is unavailable"
-                ),
-                ToastKind::Error,
-            );
+        let target = match sub {
+            AddonsSub::Datapacks => Target::new(ps::Platform::Datapack, s.version.as_deref()),
+            AddonsSub::Plugins => {
+                let hint = s.cfg.command.join(" ");
+                let Some(target) = Target::detect(s.cfg.dir(), &hint, s.version.as_deref()) else {
+                    return self.toast(
+                        tr!(
+                            "Не удалось понять ядро сервера (Paper / Fabric / …) — поиск недоступен",
+                            "Could not tell the server core (Paper / Fabric / …) — search is unavailable"
+                        ),
+                        ToastKind::Error,
+                    );
+                };
+                target
+            }
         };
-        let what = match target.kind() {
-            crate::plugins::PluginKind::Plugin => tr!("плагинов", "plugins"),
-            _ => tr!("модов", "mods"),
-        };
+        let label = target.platform.label();
         let ver = target.game_version.clone().map(|v| format!(" {v}")).unwrap_or_default();
-        let mut panel = Panel::new(
-            tr!(
-                format!(" Поиск {what} · {}{ver} ", target.platform.label()),
-                format!(" Search {what} · {}{ver} ", target.platform.label())
+        let (title, sources) = match target.kind() {
+            PluginKind::Datapack => (
+                tr!(format!(" Поиск датапаков · {label}{ver} "), format!(" Datapack search · {label}{ver} ")),
+                tr!("Источник: Modrinth.", "Source: Modrinth."),
             ),
+            kind => {
+                let what = if kind == PluginKind::Plugin {
+                    tr!("плагинов", "plugins")
+                } else {
+                    tr!("модов", "mods")
+                };
+                (
+                    tr!(format!(" Поиск {what} · {label}{ver} "), format!(" Search {what} · {label}{ver} ")),
+                    tr!("Источники: Modrinth, Hangar.", "Sources: Modrinth, Hangar."),
+                )
+            }
+        };
+        let mut panel = Panel::new(
+            title,
             PanelKind::PluginSearch { target, query: String::new(), hits: vec![], offset: 0, more: false },
             tr!(
                 "Enter — искать / установить · ↓ к списку · Tab — к строке поиска · n — ещё · Esc — закрыть",
@@ -234,9 +254,12 @@ impl App {
         panel.input_focus = true;
         panel.lines = vec![PanelLine::new(
             Tone::Muted,
-            tr!(
-                "Введите название (пустой запрос — популярное). Источники: Modrinth, Hangar.",
-                "Type a name (an empty query shows popular ones). Sources: Modrinth, Hangar."
+            format!(
+                "{} {sources}",
+                tr!(
+                    "Введите название (пустой запрос — популярное).",
+                    "Type a name (an empty query shows popular ones)."
+                )
             ),
         )];
         self.popup = Some(Popup::Panel(Box::new(panel)));
@@ -254,10 +277,12 @@ impl App {
             *offset += ps::PAGE_SIZE;
         }
         let (q, t, off) = (query.clone(), target.clone(), *offset);
+        // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
+        let legend = if t.kind() == PluginKind::Datapack { "" } else { " · M — Modrinth, H — Hangar" };
         p.busy = Some(tr!("ищу…", "searching…").into());
         self.spawn_task(
             move || ps::search(&q, &t, off),
-            |app, res| {
+            move |app, res| {
                 let mut warn = None;
                 app.with_panel(|p| {
                     p.busy = None;
@@ -303,16 +328,8 @@ impl App {
                                     tr!("ничего не найдено", "nothing found").to_string()
                                 } else {
                                     tr!(
-                                        format!(
-                                            "найдено: {}{} · M — Modrinth, H — Hangar",
-                                            hits.len(),
-                                            if *more { "+" } else { "" }
-                                        ),
-                                        format!(
-                                            "found: {}{} · M — Modrinth, H — Hangar",
-                                            hits.len(),
-                                            if *more { "+" } else { "" }
-                                        )
+                                        format!("найдено: {}{}{legend}", hits.len(), if *more { "+" } else { "" }),
+                                        format!("found: {}{}{legend}", hits.len(), if *more { "+" } else { "" })
                                     )
                                 },
                             )];
@@ -334,7 +351,7 @@ impl App {
         let PanelKind::PluginSearch { target, hits, .. } = &p.kind else { return };
         let Some(hit) = hits.get(p.sel).cloned() else { return };
         let target = target.clone();
-        let dir = self.sel().cfg.dir().to_path_buf();
+        let dir = self.install_dir(target.kind());
         p.busy = Some(tr!(format!("подбираю версию {}…", hit.title), format!("picking a version of {}…", hit.title)));
         self.spawn_task(
             move || ps::resolve(&hit, &target, &dir).map(|plan| (hit, plan)),
@@ -382,6 +399,15 @@ impl App {
         if plan.main_installed.is_some() {
             text += tr!("\n⚠ Этот проект уже установлен.", "\n⚠ This project is already installed.");
         }
+        if plan.kind == PluginKind::Datapack
+            && self.has_server()
+            && self.install_dir(plan.kind).join("level.dat").exists()
+        {
+            text += tr!(
+                "\n⚠ Если датапак меняет генерацию мира, изменения коснутся только новых чанков.",
+                "\n⚠ If the datapack changes world generation, only new chunks are affected."
+            );
+        }
         self.popup = Some(Popup::Confirm {
             title: tr!("Установка", "Install").into(),
             text,
@@ -389,10 +415,44 @@ impl App {
         });
     }
 
+    /// Куда ставить: папка сервера (`plugins/`, `mods/` внутри), для датапаков — папка мира.
+    fn install_dir(&self, kind: PluginKind) -> PathBuf {
+        let dir = self.sel().cfg.dir();
+        if kind == PluginKind::Datapack { datapacks::level_dir(dir) } else { dir.to_path_buf() }
+    }
+
     pub(super) fn install_plugin(&mut self, plan: InstallPlan) {
-        let dir = self.sel().cfg.dir().to_path_buf();
-        self.plugins.busy =
-            Some(tr!(format!("установка {}…", plan.main.title), format!("installing {}…", plan.main.title)));
+        let dir = self.install_dir(plan.kind);
+        let busy = Some(tr!(format!("установка {}…", plan.main.title), format!("installing {}…", plan.main.title)));
+        if plan.kind == PluginKind::Datapack {
+            if self.datapacks_busy() {
+                return;
+            }
+            self.datapacks.busy = busy;
+            let key = (self.sel().id, dir.clone());
+            return self.spawn_task(
+                move || ps::install(&plan, &dir),
+                |app, res| {
+                    app.datapacks.busy = None;
+                    match res {
+                        Ok(r) if r.installed.is_empty() => app.toast(
+                            tr!(
+                                format!("уже установлено: {}", r.skipped.join(", ")),
+                                format!("already installed: {}", r.skipped.join(", "))
+                            ),
+                            ToastKind::Info,
+                        ),
+                        Ok(r) => {
+                            let n = r.installed.len();
+                            let what = tr!(format!("установлено: {n}"), format!("installed: {n}"));
+                            app.finish_datapack_job(key, &r.installed, what);
+                        }
+                        Err(e) => app.toast(format!("{e:#}"), ToastKind::Error),
+                    }
+                },
+            );
+        }
+        self.plugins.busy = busy;
         self.spawn_task(
             move || ps::install(&plan, &dir),
             |app, res| {

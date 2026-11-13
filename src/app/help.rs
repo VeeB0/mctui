@@ -11,7 +11,8 @@ fn section(title: impl Into<String>, keys: Vec<(&'static str, &'static str)>) ->
     HelpSection { title: title.into(), keys }
 }
 
-fn tab_keys(tab: Tab) -> Vec<(&'static str, &'static str)> {
+/// Клавиши вкладки; у «Дополнений» — ещё и текущей подвкладки `sub`.
+fn tab_keys(tab: Tab, sub: AddonsSub) -> Vec<(&'static str, &'static str)> {
     match tab {
         Tab::Status => vec![
             ("f", tr!("как друзьям зайти: адреса, порт, проверка", "how friends join: addresses, port check")),
@@ -28,19 +29,60 @@ fn tab_keys(tab: Tab) -> Vec<(&'static str, &'static str)> {
             ("s", tr!("статистика: наиграно, входы, активность", "statistics: playtime, logins, activity")),
         ],
         Tab::Access => vec![
-            ("←→", tr!("список: белый, операторы, баны, IP", "list: whitelist, ops, bans, IP bans")),
+            (
+                "↓ / ↑",
+                tr!(
+                    "спуститься к спискам и записям / подняться к вкладкам",
+                    "go down to the lists and entries / back up to the tabs"
+                ),
+            ),
+            (
+                tr!("←→ (в списках) / [ ]", "←→ (in the lists) / [ ]"),
+                tr!("список: белый, операторы, баны, IP", "list: whitelist, ops, bans, IP bans"),
+            ),
             ("a / Enter", tr!("добавить", "add")),
             ("d / Del", tr!("убрать из списка", "remove from the list")),
             ("w", tr!("включить / выключить белый список", "turn the whitelist on / off")),
             ("u", tr!("перечитать", "reload")),
         ],
-        Tab::Plugins => vec![
-            ("i", tr!("найти и установить (Modrinth, Hangar)", "find & install (Modrinth, Hangar)")),
-            (tr!("Пробел", "Space"), tr!("включить / выключить плагин", "enable / disable the plugin")),
-            ("c", tr!("проверить обновления", "check for updates")),
-            ("Enter / U", tr!("обновить выбранный / все", "update the selected one / all")),
-            ("u", tr!("перечитать папку", "rescan the folder")),
-        ],
+        Tab::Addons => {
+            let mut keys = vec![
+                (
+                    "↓ / ↑",
+                    tr!(
+                        "спуститься к подвкладкам и записям / подняться к вкладкам",
+                        "go down to the sub-tabs and entries / back up to the tabs"
+                    ),
+                ),
+                (
+                    tr!("←→ (в подвкладках) / [ ]", "←→ (in the sub-tabs) / [ ]"),
+                    tr!("подвкладка: плагины или датапаки", "sub-tab: plugins or datapacks"),
+                ),
+            ];
+            keys.extend(match sub {
+                AddonsSub::Plugins => [
+                    ("i", tr!("найти и установить (Modrinth, Hangar)", "find & install (Modrinth, Hangar)")),
+                    (tr!("Пробел", "Space"), tr!("включить / выключить плагин", "enable / disable the plugin")),
+                    ("c", tr!("проверить обновления", "check for updates")),
+                    ("Enter / U", tr!("обновить выбранный / все", "update the selected one / all")),
+                    ("u", tr!("перечитать папку", "rescan the folder")),
+                ],
+                AddonsSub::Datapacks => [
+                    ("i", tr!("найти и установить (Modrinth)", "find & install (Modrinth)")),
+                    (
+                        tr!("Пробел", "Space"),
+                        tr!(
+                            "включить / выключить датапак (запущенный сервер перезагрузит датапаки)",
+                            "enable / disable the datapack (a running server reloads datapacks)"
+                        ),
+                    ),
+                    ("c", tr!("проверить обновления (Modrinth)", "check for updates (Modrinth)")),
+                    ("Enter / U", tr!("обновить выбранный / все", "update the selected one / all")),
+                    ("u", tr!("перечитать папку мира", "rescan the world folder")),
+                ],
+            });
+            keys
+        }
         Tab::Settings => vec![
             ("Enter", tr!("изменить значение", "edit the value")),
             (tr!("Пробел", "Space"), tr!("да/нет и варианты из списка", "yes/no and listed choices")),
@@ -125,7 +167,7 @@ impl App {
             (_, Focus::Input) => v.push(section(tr!("Строка команды", "Command line"), input_keys())),
             (_, Focus::Content) => v.push(section(
                 tr!(format!("Вкладка «{}»", self.tab.title()), format!("{} tab", self.tab.title())),
-                tab_keys(self.tab),
+                tab_keys(self.tab, self.addons.sub),
             )),
             (_, Focus::Sidebar) => {}
         }
@@ -170,7 +212,11 @@ mod tests {
         for lang in [Lang::Ru, Lang::En] {
             with_lang(lang, || {
                 for t in TABS {
-                    assert!(!tab_keys(t).is_empty(), "{t:?}");
+                    for sub in [AddonsSub::Plugins, AddonsSub::Datapacks] {
+                        let keys = tab_keys(t, sub);
+                        assert!(!keys.is_empty(), "{t:?}");
+                        assert!(keys.iter().all(|(k, d)| !k.is_empty() && !d.is_empty()), "{t:?} {sub:?}");
+                    }
                 }
                 for (k, d) in [logs_keys(), input_keys(), main_keys(), global_keys()].concat() {
                     assert!(!k.is_empty() && !d.is_empty());

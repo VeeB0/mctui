@@ -1,5 +1,5 @@
  pechka │ Survival ● running                                                                                  L · Logs
-┌ Servers ───────────────┐ 1 Status │ 2 Players │ 3 Access │ 4 Plugins │ 5 Settings │ 6 Backups │ 7 World
+┌ Servers ───────────────┐ 1 Status │ 2 Players │ 3 Access │ 4 Add-ons │ 5 Settings │ 6 Backups │ 7 World
 │● Survival 2👤           │┌ Status ────────────────────────────────────────────────────────────────────────────────────┐
 │                        ││State                  running                                                              │
 │                        ││Folder                 /nonexistent/pechka-snapshot/survival                                │

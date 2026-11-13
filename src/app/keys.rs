@@ -133,10 +133,10 @@ impl App {
                 KeyCode::Enter => self.submit_input(),
                 KeyCode::Esc => {
                     self.completion_hint = None;
-                    self.focus = Focus::Sidebar
+                    self.set_focus(Focus::Sidebar)
                 }
                 KeyCode::Tab => self.complete_input(),
-                KeyCode::BackTab => self.focus = Focus::Content,
+                KeyCode::BackTab => self.set_focus(Focus::Content),
                 KeyCode::Up => self.history_step(-1),
                 KeyCode::Down => self.history_step(1),
                 _ => {
@@ -145,20 +145,19 @@ impl App {
             }
             return;
         }
+        if self.focus == Focus::Content && self.sub_tab_arrow(k.code) {
+            return;
+        }
         match k.code {
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Sidebar => Focus::Content,
-                    _ => Focus::Input,
-                }
-            }
-            KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Content => Focus::Sidebar,
-                    _ => Focus::Input,
-                }
-            }
-            KeyCode::Esc => self.focus = Focus::Sidebar,
+            KeyCode::Tab => self.set_focus(match self.focus {
+                Focus::Sidebar => Focus::Content,
+                _ => Focus::Input,
+            }),
+            KeyCode::BackTab => self.set_focus(match self.focus {
+                Focus::Content => Focus::Sidebar,
+                _ => Focus::Input,
+            }),
+            KeyCode::Esc => self.set_focus(Focus::Sidebar),
             KeyCode::Char(c) => {
                 let c = latin(c);
                 match c {
@@ -166,15 +165,15 @@ impl App {
                     // `,` — та же клавиша, что `?`, в русской раскладке.
                     '?' | ',' => return self.open_help(),
                     '1'..='7' => {
-                        self.focus = Focus::Content;
+                        self.set_focus(Focus::Content);
                         return self.set_tab(TABS[c as usize - '1' as usize]);
                     }
                     ':' | '/' => {
-                        self.focus = Focus::Input;
+                        self.set_focus(Focus::Input);
                         return;
                     }
                     'i' if self.focus == Focus::Sidebar => {
-                        self.focus = Focus::Input;
+                        self.set_focus(Focus::Input);
                         return;
                     }
                     'q' => return self.request_quit(),
@@ -187,18 +186,15 @@ impl App {
                     self.content_char(c);
                 }
             }
-            KeyCode::Enter if self.focus == Focus::Sidebar => self.focus = Focus::Input,
+            KeyCode::Enter if self.focus == Focus::Sidebar => self.set_focus(Focus::Input),
             KeyCode::Delete if self.focus == Focus::Sidebar => self.ask_remove_server(),
             KeyCode::Delete if self.focus == Focus::Content => self.content_char('d'),
-            KeyCode::Left | KeyCode::Right if self.focus == Focus::Content && self.tab == Tab::Access => {
-                self.cycle_access_list(if k.code == KeyCode::Left { -1 } else { 1 })
-            }
             KeyCode::Left if self.focus == Focus::Content => self.cycle_tab(-1),
             KeyCode::Right => {
                 if self.focus == Focus::Content {
                     self.cycle_tab(1)
                 } else {
-                    self.focus = Focus::Content
+                    self.set_focus(Focus::Content)
                 }
             }
             KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
@@ -246,8 +242,25 @@ impl App {
                 Tab::Players => self.players_sel = step(self.players_sel, self.sel().players.len()),
                 Tab::Settings => self.settings_sel = step(self.settings_sel, self.settings_len()),
                 Tab::Backups => self.backups_sel = step(self.backups_sel, self.backups.len()),
-                Tab::Access => self.access.sel = step(self.access.sel, self.access.entries.len()),
-                Tab::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
+                Tab::Access => {
+                    // PgUp/PgDn/Home/End и колесо мыши сразу ведут в записи.
+                    if !self.access.entries.is_empty() {
+                        self.access.level = SubLevel::Entries;
+                    }
+                    self.access.sel = step(self.access.sel, self.access.entries.len())
+                }
+                Tab::Addons => {
+                    // PgUp/PgDn/Home/End и колесо мыши сразу ведут в записи.
+                    if self.addons_len() > 0 {
+                        self.addons.level = SubLevel::Entries;
+                    }
+                    match self.addons.sub {
+                        AddonsSub::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
+                        AddonsSub::Datapacks => {
+                            self.datapacks.sel = step(self.datapacks.sel, self.datapacks.items.len())
+                        }
+                    }
+                }
                 Tab::World => self.world.sel = step(self.world.sel, self.world.rows().len()),
                 Tab::Status => {}
             },
@@ -416,6 +429,12 @@ impl App {
                 _ => {}
             },
             Tab::Access => {
+                // [ ] (х ъ в русской раскладке) листают списки с любого уровня, без спуска стрелкой ↓.
+                match c {
+                    '[' => return self.cycle_access_list(-1),
+                    ']' => return self.cycle_access_list(1),
+                    _ => {}
+                }
                 if !self.sel().is_local() {
                     return;
                 }
@@ -434,6 +453,10 @@ impl App {
                         });
                     }
                     'd' => {
+                        // Выделение записи видно только на уровне записей — не удаляем то, чего не видно.
+                        if self.pick_entry_first("d") {
+                            return;
+                        }
                         if let Some(e) = self.access.entries.get(self.access.sel) {
                             let name = e.name.clone();
                             self.popup = Some(Popup::Confirm {
@@ -454,14 +477,34 @@ impl App {
                     _ => {}
                 }
             }
-            Tab::Plugins => match c {
-                'i' | 'n' => self.open_plugin_search(),
-                ' ' => self.toggle_plugin(),
-                'c' => self.check_plugin_updates(),
-                'U' => self.ask_apply_updates(true),
-                'u' => self.refresh_plugins(true),
-                _ => {}
-            },
+            Tab::Addons => {
+                // На RCON-сервере вкладка пустая: ни подвкладок, ни действий.
+                if !self.sel().is_local() {
+                    return;
+                }
+                let sub = self.addons.sub;
+                let datapacks = sub == AddonsSub::Datapacks;
+                match c {
+                    // [ ] (х ъ в русской раскладке) листают подвкладки с любого уровня.
+                    '[' => self.cycle_addons_sub(-1),
+                    ']' => self.cycle_addons_sub(1),
+                    'i' | 'n' => self.open_addon_search(sub),
+                    ' ' => {
+                        // Выделение записи видно только на уровне записей — не трогаем то, чего не видно.
+                        if self.pick_entry_first(tr!("Пробел", "Space")) {
+                            return;
+                        }
+                        if datapacks { self.toggle_datapack() } else { self.toggle_plugin() }
+                    }
+                    'c' if datapacks => self.check_datapack_updates(),
+                    'c' => self.check_plugin_updates(),
+                    'U' if datapacks => self.ask_apply_datapack_updates(true),
+                    'U' => self.ask_apply_updates(true),
+                    'u' if datapacks => self.refresh_datapacks(true),
+                    'u' => self.refresh_plugins(true),
+                    _ => {}
+                }
+            }
             Tab::World => self.world_char(c),
             Tab::Status => match c {
                 'U' => self.open_core_update(),
@@ -486,7 +529,15 @@ impl App {
                 }
                 None => {}
             },
-            Tab::Plugins => self.ask_apply_updates(false),
+            Tab::Addons => {
+                if !self.sel().is_local() || self.pick_entry_first("Enter") {
+                    return;
+                }
+                match self.addons.sub {
+                    AddonsSub::Plugins => self.ask_apply_updates(false),
+                    AddonsSub::Datapacks => self.ask_apply_datapack_updates(false),
+                }
+            }
             Tab::Access => self.content_char('a'),
             Tab::World => self.world_enter(),
             _ => {}

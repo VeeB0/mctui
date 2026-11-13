@@ -1,5 +1,6 @@
 //! Вкладка «Доступ»: белый список, операторы, баны игроков и IP.
 
+use super::sub_tabs::{Arrow, sub_arrow};
 use super::*;
 
 impl App {
@@ -32,6 +33,27 @@ impl App {
             }
         }
         self.access.sel = self.access.sel.min(self.access.entries.len().saturating_sub(1));
+        if self.access.level == SubLevel::Entries && self.access.entries.is_empty() {
+            self.access.level = SubLevel::Lists;
+        }
+    }
+
+    /// Стрелки на вкладке «Доступ» (фокус на содержимом). ↓ спускается: вкладки окна → списки → записи,
+    /// ↑ поднимается обратно. На уровне вкладок ←→ листают вкладки окна, ниже — списки.
+    /// `false` — клавиша не наша, её обработает общий код (←→ по вкладкам, ↑↓ по записям).
+    pub(super) fn access_arrow(&mut self, code: KeyCode) -> bool {
+        if !self.sel().is_local() {
+            return false;
+        }
+        let a = &mut self.access;
+        match sub_arrow(&mut a.level, &mut a.sel, a.entries.len(), code) {
+            Arrow::NotMine => false,
+            Arrow::Handled => true,
+            Arrow::Cycle(d) => {
+                self.cycle_access_list(d);
+                true
+            }
+        }
     }
 
     pub(super) fn cycle_access_list(&mut self, d: isize) {

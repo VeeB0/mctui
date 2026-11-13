@@ -8,6 +8,7 @@ use crate::access::{self, List};
 use crate::backup::{self, BackupInfo};
 use crate::client::Client;
 use crate::config::{Kind, ServerConfig};
+use crate::datapacks::{self, DatapackInfo};
 use crate::event::{AppEvent, UiTask};
 use crate::input::TextInput;
 use crate::log::{Level, LogBuffer, LogLine};
@@ -29,7 +30,9 @@ use tokio::sync::mpsc;
 pub use crate::core::human_bytes;
 
 mod access_tab;
+mod addons_tab;
 mod backup_health;
+mod datapacks_tab;
 mod events;
 mod help;
 mod keys;
@@ -40,6 +43,7 @@ mod panel;
 mod plugins_tab;
 mod settings_tab;
 mod setup_flow;
+mod sub_tabs;
 mod tools;
 mod world_tab;
 pub use backup_health::{BackupHealth, ago};
@@ -63,14 +67,14 @@ pub enum Tab {
     Status,
     Players,
     Access,
-    Plugins,
+    Addons,
     Settings,
     Backups,
     World,
 }
 
 pub const TABS: [Tab; 7] =
-    [Tab::Status, Tab::Players, Tab::Access, Tab::Plugins, Tab::Settings, Tab::Backups, Tab::World];
+    [Tab::Status, Tab::Players, Tab::Access, Tab::Addons, Tab::Settings, Tab::Backups, Tab::World];
 
 impl Tab {
     pub fn title(self) -> &'static str {
@@ -78,7 +82,7 @@ impl Tab {
             Tab::Status => tr!("Статус", "Status"),
             Tab::Players => tr!("Игроки", "Players"),
             Tab::Access => tr!("Доступ", "Access"),
-            Tab::Plugins => tr!("Плагины", "Plugins"),
+            Tab::Addons => tr!("Дополнения", "Add-ons"),
             Tab::Settings => tr!("Настройки", "Settings"),
             Tab::Backups => tr!("Бэкапы", "Backups"),
             Tab::World => tr!("Мир", "World"),
@@ -111,6 +115,11 @@ pub enum Action {
     RemoveServer(usize),
     AccessRemove { list: List, name: String },
     ApplyUpdates(Vec<PathBuf>),
+    ReloadDatapacks(usize),
+    // `datapack enable "file/<имя>"` на сервере `id`: пак выключен в игре командой `/datapack`.
+    EnableDatapackInGame(usize, Box<DatapackInfo>),
+    DatapackToggle(PathBuf),
+    ApplyDatapackUpdates(Vec<PathBuf>),
     InstallPlugin(Box<crate::plugin_search::InstallPlan>),
     ResetDimension(crate::world::Dimension),
     SetLevel(String),
@@ -246,8 +255,21 @@ impl ServerUi {
     }
 }
 
+/// Где стрелки на вкладках с подвкладками («Доступ», «Дополнения»): ↓ спускает уровнем ниже, ↑ поднимает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubLevel {
+    /// ←→ листают вкладки окна, как на остальных вкладках.
+    #[default]
+    Tabs,
+    /// ←→ листают подвкладки («Доступ»: белый список, операторы, баны, IP; «Дополнения»: плагины, датапаки).
+    Lists,
+    /// ↑↓ выбирают запись, ←→ по-прежнему листают подвкладки.
+    Entries,
+}
+
 pub struct AccessView {
     pub list: List,
+    pub level: SubLevel,
     pub entries: Vec<access::Entry>,
     pub sel: usize,
     pub error: Option<String>,
@@ -264,6 +286,33 @@ pub struct PluginsView {
     pub checked: bool,
     pub busy: Option<String>,
     loaded_for: Option<usize>,
+}
+
+/// Подвкладка вкладки «Дополнения».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddonsSub {
+    #[default]
+    Plugins,
+    Datapacks,
+}
+
+/// Где стрелки на вкладке «Дополнения».
+pub struct AddonsNav {
+    pub sub: AddonsSub,
+    pub level: SubLevel,
+}
+
+pub struct DatapacksView {
+    pub items: Vec<DatapackInfo>,
+    pub sel: usize,
+    pub updates: HashMap<PathBuf, UpdateInfo>,
+    /// Версия на Modrinth по пути файла (известна после проверки обновлений).
+    pub versions: HashMap<PathBuf, String>,
+    pub checking: bool,
+    pub checked: bool,
+    pub busy: Option<String>,
+    /// (id сервера, папка мира), для которых загружен список.
+    loaded_for: Option<(usize, PathBuf)>,
 }
 
 /// Состояние автодополнения по Tab (повторный Tab — следующий вариант).
@@ -288,6 +337,8 @@ pub struct App {
     pub completion_hint: Option<String>,
     pub popup: Option<Popup>,
     pub toast: Option<(String, ToastKind, Instant)>,
+    /// Команды, о которых окно уже сообщило своим уведомлением: ответ службы «отправлено: …» на них не показываем.
+    announced: Vec<(String, Instant)>,
     pub should_quit: bool,
     pub exit_message: Option<String>,
     pub players_sel: usize,
@@ -297,6 +348,8 @@ pub struct App {
     backups_at: Option<Instant>,
     pub access: AccessView,
     pub plugins: PluginsView,
+    pub addons: AddonsNav,
+    pub datapacks: DatapacksView,
     pub world: WorldView,
     pub logs: LogsView,
     /// Высота области лога из последней отрисовки — для прыжков к совпадениям.
@@ -359,6 +412,7 @@ impl App {
             completion_hint: None,
             popup: None,
             toast: None,
+            announced: vec![],
             should_quit: false,
             exit_message: None,
             players_sel: 0,
@@ -368,6 +422,7 @@ impl App {
             backups_at: None,
             access: AccessView {
                 list: List::Whitelist,
+                level: SubLevel::Tabs,
                 entries: vec![],
                 sel: 0,
                 error: None,
@@ -379,6 +434,17 @@ impl App {
                 items: vec![],
                 sel: 0,
                 updates: HashMap::new(),
+                checking: false,
+                checked: false,
+                busy: None,
+                loaded_for: None,
+            },
+            addons: AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs },
+            datapacks: DatapacksView {
+                items: vec![],
+                sel: 0,
+                updates: HashMap::new(),
+                versions: HashMap::new(),
                 checking: false,
                 checked: false,
                 busy: None,
@@ -430,6 +496,14 @@ impl App {
 
     fn send(&self, r: Request) {
         self.client.send(r);
+    }
+
+    /// Консольная команда, о которой окно сообщает своим, более подробным уведомлением: общая отметка
+    /// службы «отправлено: <cmd>» его не затирает (ошибки показываются как обычно).
+    fn send_announced(&mut self, id: usize, cmd: String) {
+        self.announced.retain(|(_, at)| at.elapsed() < ANNOUNCED_FOR);
+        self.announced.push((cmd.clone(), Instant::now()));
+        self.send(Request::Command { id, cmd, user: false });
     }
 
     /// Запуск блокирующей работы в фоне; результат применяется к окну.
@@ -693,6 +767,10 @@ impl App {
             Action::RemoveServer(id) => self.send(Request::RemoveServer { id }),
             Action::AccessRemove { list, name } => self.access_remove(list, &name),
             Action::ApplyUpdates(paths) => self.apply_updates(paths),
+            Action::ReloadDatapacks(id) => self.reload_datapacks(id),
+            Action::EnableDatapackInGame(id, d) => self.enable_datapack_in_game(id, &d),
+            Action::DatapackToggle(path) => self.toggle_datapack_at(path),
+            Action::ApplyDatapackUpdates(paths) => self.apply_datapack_updates(paths),
             Action::InstallPlugin(plan) => self.install_plugin(*plan),
             Action::ResetDimension(d) => self.reset_dimension(d),
             Action::SetLevel(name) => self.set_level(name),
@@ -784,7 +862,10 @@ impl App {
         self.settings_sel = 0;
         self.backups_sel = 0;
         self.access.sel = 0;
+        self.access.level = SubLevel::Tabs;
         self.plugins.sel = 0;
+        self.datapacks.sel = 0;
+        self.addons = AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs };
         self.world.sel = 0;
         self.completion = None;
         self.completion_hint = None;
@@ -805,15 +886,69 @@ impl App {
                 }
             }
             Tab::Backups => self.refresh_backups(),
-            Tab::Plugins => self.refresh_plugins(force),
+            Tab::Addons => {
+                self.refresh_plugins(force);
+                self.refresh_datapacks(force);
+            }
             Tab::World => self.refresh_world(force),
             _ => {}
         }
     }
 
+    /// Единственное место смены фокуса. Уходя с содержимого, уровни подвкладок сбрасываются: вернувшись,
+    /// ←→ снова листают вкладки окна (правило стрелок), а не подвкладки.
+    fn set_focus(&mut self, f: Focus) {
+        if f != Focus::Content {
+            self.access.level = SubLevel::Tabs;
+            self.addons.level = SubLevel::Tabs;
+        }
+        self.focus = f;
+    }
+
     fn set_tab(&mut self, t: Tab) {
         self.tab = t;
+        self.access.level = SubLevel::Tabs;
+        self.addons = AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs };
         self.on_tab_shown(false);
+    }
+}
+
+/// Сколько помнить команду, о которой окно уже сообщило своим уведомлением (см. [`App::send_announced`]).
+const ANNOUNCED_FOR: Duration = Duration::from_secs(5);
+
+/// Отметка службы «отправлено: <cmd>» / «sent: <cmd>» (core.rs, ответ на `Request::Command` с `user: false`)
+/// о команде из `list`, отправленной меньше [`ANNOUNCED_FOR`] назад. Совпавшая запись снимается (одна отметка —
+/// одна команда), устаревшие — тоже. Служба может говорить на другом языке, поэтому понимаем оба.
+fn take_announced(list: &mut Vec<(String, Instant)>, text: &str, now: Instant) -> bool {
+    list.retain(|(_, at)| now.duration_since(*at) < ANNOUNCED_FOR);
+    let Some(cmd) = text.strip_prefix("sent: ").or_else(|| text.strip_prefix("отправлено: ")) else {
+        return false;
+    };
+    match list.iter().position(|(c, _)| c == cmd) {
+        Some(i) => {
+            list.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+impl App {
+    /// Окно без службы (тесты): будто служба поздоровалась и прислала снимок `servers`.
+    pub(crate) fn for_test(config: PathBuf, client: Client, servers: Vec<ServerView>) -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = App::new(config.clone(), client, tx);
+        app.on_event(AppEvent::Daemon(Box::new(Msg::Welcome {
+            version: crate::update::VERSION.into(),
+            protocol: crate::proto::PROTOCOL,
+            pid: 1,
+            config_path: config,
+            language: None,
+            can_detach: true,
+        })));
+        app.on_event(AppEvent::Daemon(Box::new(Msg::State { servers })));
+        app
     }
 }
 
@@ -881,6 +1016,19 @@ mod tests {
             assert_eq!(players_note(&p(1)).unwrap(), "1 player is online: P1.");
             assert_eq!(players_note(&p(2)).unwrap(), "2 players are online: P1, P2.");
         });
+    }
+
+    #[test]
+    fn announced_commands_match_exactly_and_expire() {
+        let t0 = Instant::now();
+        let mut list = vec![("minecraft:reload".to_string(), t0)];
+        assert!(!take_announced(&mut list, "sent: reload", t0));
+        assert!(!take_announced(&mut list, "sent: minecraft:reload now", t0));
+        assert!(take_announced(&mut list, "sent: minecraft:reload", t0 + Duration::from_secs(1)));
+        assert!(list.is_empty(), "одна отметка — одна команда");
+        list.push(("minecraft:reload".into(), t0));
+        assert!(!take_announced(&mut list, "sent: minecraft:reload", t0 + ANNOUNCED_FOR));
+        assert!(list.is_empty(), "устаревшие записи снимаются");
     }
 
     #[test]

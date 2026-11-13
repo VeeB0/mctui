@@ -31,26 +31,26 @@ impl App {
                         } else if l.tabs.contains(pos) {
                             if let Some(t) = layout::tab_at(l.tabs, m.column) {
                                 self.set_tab(TABS[t]);
-                                self.focus = Focus::Content;
+                                self.set_focus(Focus::Content);
                             }
                         } else if l.sidebar.contains(pos) {
-                            self.focus = Focus::Sidebar;
+                            self.set_focus(Focus::Sidebar);
                             let row = m.row.saturating_sub(l.sidebar.y + 1) as usize;
                             if row < self.servers.len() && row != self.selected {
                                 self.selected = row;
                                 self.on_select_changed();
                             }
                         } else if l.input.contains(pos) {
-                            self.focus = Focus::Input;
+                            self.set_focus(Focus::Input);
                         } else if l.content.contains(pos) {
-                            self.focus = Focus::Content;
+                            self.set_focus(Focus::Content);
                         }
                     }
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                         if l.sidebar.contains(pos) {
-                            self.focus = Focus::Sidebar
+                            self.set_focus(Focus::Sidebar)
                         } else if l.content.contains(pos) {
-                            self.focus = Focus::Content
+                            self.set_focus(Focus::Content)
                         }
                         self.move_selection(if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 })
                     }
@@ -88,7 +88,7 @@ impl App {
         } else if let Some(inp) = &mut self.logs.search_input {
             inp.insert_str(s);
         } else if self.screen == Screen::Main && self.has_server() {
-            self.focus = Focus::Input;
+            self.set_focus(Focus::Input);
             self.input.insert_str(s);
         }
     }

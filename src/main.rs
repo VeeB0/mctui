@@ -13,6 +13,7 @@ mod core_update;
 mod crash;
 mod create;
 mod daemon;
+mod datapacks;
 mod event;
 mod i18n;
 mod input;

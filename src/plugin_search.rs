@@ -42,6 +42,8 @@ pub enum Platform {
     Quilt,
     Forge,
     NeoForge,
+    /// Датапаки мира (Modrinth, загрузчик `datapack`); `detect` его не возвращает — выбирается вкладкой «Датапаки».
+    Datapack,
 }
 
 impl Platform {
@@ -55,6 +57,7 @@ impl Platform {
             Platform::Quilt => "Quilt",
             Platform::Forge => "Forge",
             Platform::NeoForge => "NeoForge",
+            Platform::Datapack => "Minecraft",
         }
     }
 
@@ -62,6 +65,7 @@ impl Platform {
         match self {
             Platform::Paper | Platform::Purpur | Platform::Folia | Platform::Spigot => PluginKind::Plugin,
             Platform::Fabric | Platform::Quilt | Platform::Forge | Platform::NeoForge => PluginKind::Mod,
+            Platform::Datapack => PluginKind::Datapack,
         }
     }
 
@@ -77,6 +81,7 @@ impl Platform {
             Platform::Quilt => plugins::QUILT_LOADERS,
             Platform::Forge => plugins::FORGE_LOADERS,
             Platform::NeoForge => plugins::NEOFORGE_LOADERS,
+            Platform::Datapack => crate::datapacks::DATAPACK_LOADERS,
         }
     }
 
@@ -162,6 +167,7 @@ pub fn folder(kind: PluginKind) -> &'static str {
     match kind {
         PluginKind::Plugin => "plugins",
         PluginKind::Mod => "mods",
+        PluginKind::Datapack => crate::datapacks::ENABLED_DIR,
     }
 }
 
@@ -274,6 +280,7 @@ fn modrinth_facets(target: &Target) -> serde_json::Value {
     let ptype = match target.kind() {
         PluginKind::Plugin => "plugin",
         PluginKind::Mod => "mod",
+        PluginKind::Datapack => "datapack",
     };
     let mut facets = vec![
         vec![format!("project_type:{ptype}")],
@@ -536,25 +543,39 @@ pub(crate) struct InstalledIndex {
 
 impl InstalledIndex {
     /// Сканирует папку нужного типа; id проектов Modrinth — по SHA-1 (`POST /version_files`). Сбой сети не фатален.
+    /// Для датапаков `server_dir` — папка мира (`datapacks::level_dir`), сканируются `datapacks/` и `datapacks.disabled/`.
     fn load(http: &dyn Http, server_dir: &Path, kind: PluginKind) -> Self {
-        let list: Vec<_> = plugins::scan(server_dir).into_iter().filter(|p| p.kind == kind).collect();
+        // (путь, имя, имя файла, включён, sha1)
+        let list: Vec<(PathBuf, String, String, bool, String)> = if kind == PluginKind::Datapack {
+            crate::datapacks::scan(server_dir)
+                .into_iter()
+                .map(|d| (d.path, d.name, d.file_name, d.enabled, d.sha1))
+                .collect()
+        } else {
+            plugins::scan(server_dir)
+                .into_iter()
+                .filter(|p| p.kind == kind)
+                .map(|p| (p.path, p.name, p.file_name, p.enabled, p.sha1))
+                .collect()
+        };
         let mut idx = InstalledIndex::default();
-        for p in &list {
-            let stem = plugins::split_jar_name(&p.file_name).map(|(s, _)| s).unwrap_or(&p.file_name);
-            for n in [norm(&p.name), norm(stem)] {
+        for (path, name, file_name, enabled, _) in &list {
+            let stem = plugins::split_jar_name(file_name).map(|(s, _)| s).unwrap_or(file_name);
+            let stem = stem.strip_suffix(".zip").unwrap_or(stem);
+            for n in [norm(name), norm(stem)] {
                 if !n.is_empty() {
-                    idx.names.entry(n).or_insert((p.path.clone(), p.enabled));
+                    idx.names.entry(n).or_insert((path.clone(), *enabled));
                 }
             }
         }
-        let hashes: Vec<&str> = list.iter().map(|p| p.sha1.as_str()).filter(|h| !h.is_empty()).collect();
+        let hashes: Vec<&str> = list.iter().map(|p| p.4.as_str()).filter(|h| !h.is_empty()).collect();
         if !hashes.is_empty() {
             let body = serde_json::json!({ "hashes": hashes, "algorithm": "sha1" });
             let url = format!("{}/version_files", plugins::MODRINTH_API);
             if let Ok(map) = http.post_json(&url, &body).and_then(|r| plugins::parse_versions_response(&r)) {
                 for (hash, v) in map {
-                    if let Some(p) = list.iter().find(|p| p.sha1.eq_ignore_ascii_case(&hash)) {
-                        idx.projects.entry(v.project_id).or_insert((p.path.clone(), p.enabled));
+                    if let Some(p) = list.iter().find(|p| p.4.eq_ignore_ascii_case(&hash)) {
+                        idx.projects.entry(v.project_id).or_insert((p.0.clone(), p.3));
                     }
                 }
             }
@@ -669,20 +690,28 @@ fn mr_compatible(v: &MrVersion, target: &Target) -> bool {
     v.loaders.is_empty() || v.loaders.iter().any(|l| target.platform.loaders().contains(&l.as_str()))
 }
 
-fn mr_jar(v: &MrVersion) -> Option<&plugins::MrFile> {
-    v.primary_file().filter(|f| f.filename.to_ascii_lowercase().ends_with(".jar"))
+/// Расширение основного файла версии: `.zip` у датапаков, `.jar` у остальных.
+fn file_ext(kind: PluginKind) -> &'static str {
+    if kind == PluginKind::Datapack { ".zip" } else { ".jar" }
 }
 
-/// Новейшая подходящая версия Modrinth: с jar-файлом, совместимым загрузчиком; релиз предпочтительнее беты/альфы.
+fn mr_file(v: &MrVersion, kind: PluginKind) -> Option<&plugins::MrFile> {
+    v.primary_file().filter(|f| {
+        f.filename.to_ascii_lowercase().ends_with(file_ext(kind))
+            && (kind != PluginKind::Datapack || plugins::safe_file_name(&f.filename, ".zip").is_ok())
+    })
+}
+
+/// Новейшая подходящая версия Modrinth: с jar- (у датапаков zip-) файлом, совместимым загрузчиком; релиз предпочтительнее беты/альфы.
 fn pick_modrinth(mut versions: Vec<MrVersion>, target: &Target) -> Option<MrVersion> {
-    versions.retain(|v| mr_compatible(v, target) && mr_jar(v).is_some());
+    versions.retain(|v| mr_compatible(v, target) && mr_file(v, target.kind()).is_some());
     versions.sort_by_key(|v| std::cmp::Reverse(v.published()));
     let idx = versions.iter().position(|v| v.version_type == "release").unwrap_or(0);
     (idx < versions.len()).then(|| versions.swap_remove(idx))
 }
 
 fn mr_planned(v: &MrVersion, title: &str) -> Option<PlannedFile> {
-    let f = mr_jar(v)?;
+    let f = v.primary_file()?; // имя уже проверено `mr_file` в `pick_modrinth`
     let h = |k: &str| f.hashes.get(k).map(|x| x.to_ascii_lowercase());
     Some(PlannedFile {
         source: Source::Modrinth,
@@ -813,7 +842,8 @@ impl Resolver<'_> {
             self.unresolved.push(Self::no_version(&project.title));
             return Ok(());
         }
-        let version = match pinned.filter(|v| mr_compatible(v, self.target) && mr_jar(v).is_some()) {
+        let version = match pinned.filter(|v| mr_compatible(v, self.target) && mr_file(v, self.target.kind()).is_some())
+        {
             Some(v) => Some(v),
             None => pick_modrinth(self.mr_versions(&pid)?, self.target),
         };
@@ -881,6 +911,7 @@ impl Resolver<'_> {
 /// Подбирает новейшую совместимую с сервером версию результата поиска и его обязательные зависимости
 /// (рекурсивно; уже установленные в `plugins/`/`mods/` пропускаются — по id проекта Modrinth через SHA-1
 /// или по имени). `Ok(None)` — совместимой версии нет. Ничего не скачивает.
+/// Для датапаков `server_dir` — папка мира (`datapacks::level_dir`).
 pub fn resolve(hit: &SearchHit, target: &Target, server_dir: &Path) -> Result<Option<InstallPlan>> {
     let installed = InstalledIndex::load(&Curl, server_dir, target.kind());
     resolve_with(&Curl, hit, target, &installed)
@@ -1035,7 +1066,7 @@ fn actual_hash(algo: &str, path: &Path) -> Result<String> {
     }
 }
 
-fn verify(f: &PlannedFile, path: &Path) -> Result<()> {
+fn verify(f: &PlannedFile, path: &Path, kind: PluginKind) -> Result<()> {
     let Some((algo, expected)) = expected_hash(f) else {
         bail!(tr!(
             format!("{}: у файла нет контрольной суммы", f.file_name),
@@ -1058,12 +1089,22 @@ fn verify(f: &PlannedFile, path: &Path) -> Result<()> {
             format!("{}: checksum mismatch ({algo})", f.file_name)
         ));
     }
-    zip::ZipArchive::new(std::fs::File::open(path)?).with_context(|| {
-        tr!(
-            format!("{}: скачанный файл — не jar", f.file_name),
-            format!("{}: downloaded file is not a jar", f.file_name)
-        )
+    let zip = zip::ZipArchive::new(std::fs::File::open(path)?).with_context(|| {
+        if kind == PluginKind::Datapack {
+            tr!(
+                format!("{}: скачанный файл — не zip-архив", f.file_name),
+                format!("{}: downloaded file is not a zip archive", f.file_name)
+            )
+        } else {
+            tr!(
+                format!("{}: скачанный файл — не jar", f.file_name),
+                format!("{}: downloaded file is not a jar", f.file_name)
+            )
+        }
     })?;
+    if kind == PluginKind::Datapack && !crate::datapacks::has_pack_mcmeta(&zip) {
+        bail!("{}: {}", f.file_name, crate::datapacks::not_a_datapack());
+    }
     Ok(())
 }
 
@@ -1071,9 +1112,10 @@ fn same_content(f: &PlannedFile, path: &Path) -> bool {
     expected_hash(f).is_some_and(|(algo, h)| actual_hash(algo, path).is_ok_and(|a| a.eq_ignore_ascii_case(h)))
 }
 
-/// Скачивает файлы плана в `<server_dir>/plugins` или `/mods`: каждый — во временный `.part`, проверка размера,
+/// Скачивает файлы плана в `<server_dir>/plugins` или `/mods` (для датапаков `server_dir` — папка мира,
+/// файлы идут в `<мир>/datapacks`, а временные `.part` — в `<мир>/datapacks.disabled`): каждый — во временный `.part`, проверка размера,
 /// хэша (sha512 / sha256 / sha1) и того, что это jar; затем все переносятся на место. Существующий файл
-/// с тем же именем и другим содержимым (или его `.jar.disabled`) — ошибка до начала скачивания;
+/// с тем же именем и другим содержимым (или его `.jar.disabled` / запись в `datapacks.disabled`) — ошибка до начала скачивания;
 /// с тем же содержимым — пропускается. При любой ошибке ничего не остаётся. Действует после перезапуска.
 pub fn install(plan: &InstallPlan, server_dir: &Path) -> Result<InstallReport> {
     install_with(plan, server_dir, plugins::download)
@@ -1085,11 +1127,13 @@ pub(crate) fn install_with(
     fetch: impl Fn(&str, &Path) -> Result<()>,
 ) -> Result<InstallReport> {
     let dir = server_dir.join(folder(plan.kind));
+    let datapack = plan.kind == PluginKind::Datapack;
+    let off_dir = server_dir.join(crate::datapacks::DISABLED_DIR);
     let mut todo: Vec<(&PlannedFile, PathBuf)> = Vec::new();
     let mut skipped = Vec::new();
     let mut names = HashSet::new();
     for f in plan.files() {
-        let name = plugins::safe_jar_name(&f.file_name)?;
+        let name = plugins::safe_file_name(&f.file_name, file_ext(plan.kind))?;
         if !names.insert(name.to_ascii_lowercase()) {
             continue;
         }
@@ -1104,7 +1148,14 @@ pub(crate) fn install_with(
                 format!("file {name} already exists (another version?)")
             ));
         }
-        if dir.join(format!("{name}{}", plugins::DISABLED_SUFFIX)).exists() {
+        if datapack {
+            if off_dir.join(name).exists() {
+                bail!(tr!(
+                    format!("{name} уже лежит выключенным (datapacks.disabled)"),
+                    format!("{name} is already present but disabled (datapacks.disabled)")
+                ));
+            }
+        } else if dir.join(format!("{name}{}", plugins::DISABLED_SUFFIX)).exists() {
             bail!(tr!(
                 format!("{name} уже лежит выключенным (.disabled)"),
                 format!("{name} is already present but disabled (.disabled)")
@@ -1116,16 +1167,26 @@ pub(crate) fn install_with(
         tr!(format!("не удалось создать {}", dir.display()), format!("failed to create {}", dir.display()))
     })?;
 
-    // Без расширения .jar — сервер не подхватит недокачанный файл.
+    // Датапак в `datapacks/` — только готовые паки: Minecraft пишет в лог каждую лишнюю запись, поэтому
+    // временные файлы лежат в `datapacks.disabled/` (та же файловая система — `rename` на место).
+    let tmp_dir = if datapack {
+        std::fs::create_dir_all(&off_dir).with_context(|| {
+            tr!(format!("не удалось создать {}", off_dir.display()), format!("failed to create {}", off_dir.display()))
+        })?;
+        &off_dir
+    } else {
+        &dir
+    };
+    // Без расширения .jar/.zip — сервер не подхватит недокачанный файл.
     let tmps: Vec<PathBuf> =
-        (0..todo.len()).map(|i| dir.join(format!(".pechka-download-{}-{i}.part", std::process::id()))).collect();
+        (0..todo.len()).map(|i| tmp_dir.join(format!(".pechka-download-{}-{i}.part", std::process::id()))).collect();
     let cleanup = || {
         for t in &tmps {
             let _ = std::fs::remove_file(t);
         }
     };
     for ((f, _), tmp) in todo.iter().zip(&tmps) {
-        if let Err(e) = fetch(&f.url, tmp).and_then(|_| verify(f, tmp)) {
+        if let Err(e) = fetch(&f.url, tmp).and_then(|_| verify(f, tmp, plan.kind)) {
             cleanup();
             return Err(e);
         }
@@ -1159,6 +1220,10 @@ pub(crate) fn install_with(
         PluginKind::Mod => {
             tr!("Перезапустите сервер, чтобы моды загрузились.", "Restart the server to load the new mods.")
         }
+        PluginKind::Datapack => tr!(
+            "Датапак подхватится после перезагрузки датапаков или перезапуска.",
+            "The datapack loads after a datapack reload or a restart."
+        ),
     };
     Ok(InstallReport { installed, skipped, note: note.to_string() })
 }
@@ -1590,6 +1655,144 @@ mod tests {
             sha256: None,
             size: Some(std::fs::metadata(src).unwrap().len()),
         }
+    }
+
+    fn zip_version(id: &str, filename: &str, loaders: &[&str]) -> String {
+        format!(
+            r#"{{"id":"{id}","project_id":"DP","version_number":"{id}-ver","date_published":"2026-01-01T00:00:00Z",
+               "version_type":"release","loaders":{},"game_versions":["26.3"],
+               "files":[{{"hashes":{{"sha1":"AA{id}","sha512":"BB{id}"}},"url":"https://cdn.modrinth.com/{filename}",
+                         "filename":"{filename}","primary":true,"size":123}}],"dependencies":[]}}"#,
+            serde_json::json!(loaders)
+        )
+    }
+
+    fn datapack_hit() -> SearchHit {
+        SearchHit {
+            source: Source::Modrinth,
+            id: "DP".into(),
+            slug: "dp".into(),
+            title: "DP".into(),
+            description: String::new(),
+            author: String::new(),
+            downloads: 0,
+            latest_game_version: None,
+            page: String::new(),
+        }
+    }
+
+    #[test]
+    fn datapack_facets_and_no_hangar() {
+        let t = Target::new(Platform::Datapack, Some("26.3"));
+        let url = modrinth_search_url("", &t, 0);
+        let decoded = url.replace("%3A", ":").replace("%22", "\"");
+        for want in ["project_type:datapack", "categories:datapack", "versions:26.3"] {
+            assert!(decoded.contains(want), "{want} not in {decoded}");
+        }
+        assert_eq!(
+            modrinth_facets(&t).as_array().unwrap().last().unwrap(),
+            &serde_json::json!(["server_side!=unsupported"])
+        );
+        assert_eq!(Platform::Datapack.label(), "Minecraft");
+        assert_eq!(Platform::Datapack.kind(), PluginKind::Datapack);
+        assert_eq!(Platform::Datapack.loaders(), crate::datapacks::DATAPACK_LOADERS);
+        assert_eq!(Platform::Datapack.hangar(), None);
+        assert_eq!(folder(PluginKind::Datapack), "datapacks");
+
+        let http = FakeHttp::default().route("api.modrinth.com/v2/search", MR_SEARCH);
+        let r = search_with(&http, "", &t, 0).unwrap();
+        assert!(r.warnings.is_empty());
+        assert_eq!(http.log.borrow().len(), 1);
+    }
+
+    #[test]
+    fn datapack_resolve_picks_zip() {
+        let list =
+            format!("[{},{}]", zip_version("a", "x.jar", &["datapack"]), zip_version("b", "x-1.0.zip", &["datapack"]));
+        let http = FakeHttp::default().route("/project/DP/version", &list);
+        let t = Target::new(Platform::Datapack, Some("26.3"));
+        let plan = resolve_with(&http, &datapack_hit(), &t, &InstalledIndex::default()).unwrap().unwrap();
+        assert_eq!(plan.main.file_name, "x-1.0.zip");
+        assert_eq!(plan.kind, PluginKind::Datapack);
+        let url = http.log.borrow()[0].clone();
+        assert!(url.contains(&enc(r#"["datapack"]"#)), "{url}");
+    }
+
+    fn datapack_plan(src: &Path) -> InstallPlan {
+        let mut main = planned(src, "x-1.0");
+        main.file_name = "x-1.0.zip".into();
+        InstallPlan {
+            kind: PluginKind::Datapack,
+            main,
+            deps: vec![],
+            already_installed: vec![],
+            unresolved: vec![],
+            main_installed: None,
+        }
+    }
+
+    #[test]
+    fn install_datapack_creates_world_dirs() {
+        let t = TempDir::new("dp-install");
+        let src = t.0.join("src").join("x-1.0.zip");
+        make_jar(&src, &[("pack.mcmeta", "{}")]);
+        let plan = datapack_plan(&src);
+        let world = t.0.join("world");
+        let seen = RefCell::new(Vec::new());
+        let fetch = |_: &str, dest: &Path| -> Result<()> {
+            seen.borrow_mut().push(dest.to_path_buf());
+            std::fs::copy(&src, dest)?;
+            Ok(())
+        };
+        let r = install_with(&plan, &world, fetch).unwrap();
+        assert_eq!(r.installed, [world.join("datapacks").join("x-1.0.zip")]);
+        assert!(world.join("datapacks").join("x-1.0.zip").is_file());
+        assert!(r.note.contains("datapack") || r.note.contains("датапак"));
+        // Временные файлы — в datapacks.disabled/, а не в datapacks/; после установки их нет нигде.
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].starts_with(world.join("datapacks.disabled")), "{:?}", seen[0]);
+        for d in ["datapacks", "datapacks.disabled"] {
+            let parts = std::fs::read_dir(world.join(d))
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+                .count();
+            assert_eq!(parts, 0);
+        }
+        let names: Vec<_> = std::fs::read_dir(world.join("datapacks")).unwrap().flatten().collect();
+        assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn install_datapack_rejects_zip_without_pack_mcmeta() {
+        let t = TempDir::new("dp-nomcmeta");
+        let src = t.0.join("src").join("x-1.0.zip");
+        // Настоящий zip (и хэш совпадёт), но pack.mcmeta не в корне — игра такой пак не увидит.
+        make_jar(&src, &[("x/pack.mcmeta", "{}"), ("plugin.yml", "name: x")]);
+        let plan = datapack_plan(&src);
+        let world = t.0.join("world");
+        let fetch = |_: &str, dest: &Path| -> Result<()> {
+            std::fs::copy(&src, dest)?;
+            Ok(())
+        };
+        let e = install_with(&plan, &world, fetch).unwrap_err();
+        assert!(format!("{e:#}").contains("pack.mcmeta"), "{e:#}");
+        assert!(!world.join("datapacks").join("x-1.0.zip").exists());
+    }
+
+    #[test]
+    fn install_datapack_refuses_disabled_twin() {
+        let t = TempDir::new("dp-twin");
+        let src = t.0.join("src").join("x-1.0.zip");
+        make_jar(&src, &[("pack.mcmeta", "{}")]);
+        let plan = datapack_plan(&src);
+        let world = t.0.join("world");
+        std::fs::create_dir_all(world.join("datapacks.disabled").join("x-1.0.zip")).unwrap();
+        let fetch = |_: &str, _: &Path| -> Result<()> { panic!("nothing must be downloaded") };
+        let e = install_with(&plan, &world, fetch).unwrap_err();
+        assert!(format!("{e:#}").contains("datapacks.disabled"), "{e:#}");
+        assert!(!world.join("datapacks").join("x-1.0.zip").exists());
     }
 
     #[test]
