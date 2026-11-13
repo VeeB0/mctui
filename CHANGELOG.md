@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-13
+
 ### Добавлено
 - **Серверы переживают перезапуск службы**: каждый локальный сервер держит маленький процесс-хранитель
   (`mctui __keeper`) в своей группе процессов. `mctui daemon restart`, обновление mctui и смена версии
@@ -116,7 +118,8 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/VeeB0/mctui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/VeeB0/mctui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/VeeB0/mctui/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/VeeB0/mctui/compare/v0.1.0...v0.1.1
