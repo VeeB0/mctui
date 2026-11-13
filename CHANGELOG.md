@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-14
+
 ### Добавлено
 - Новый мир на вкладке «Мир» (`N`): имя папки (подставлено свободное), сид (пусто — случайный) и тип —
   обычный, плоский, большие биомы или амплифицированный (`←→` в сводке). pechka записывает `level-name`,
@@ -269,7 +271,8 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/VeeB0/pechka/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/VeeB0/pechka/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/VeeB0/pechka/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/VeeB0/pechka/compare/v0.7.0...v0.8.0
