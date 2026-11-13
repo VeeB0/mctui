@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-13
+
 ### Безопасность
 - **Сборки в релизах подписаны** [minisign](https://jedisct1.github.io/minisign/) (`<файл>.minisig`).
   `mctui update` и обновление из окна (`Ctrl+U`) проверяют подпись вшитым открытым ключом
@@ -43,6 +45,14 @@
 - Подпись релизов: в CI нужен секрет `MINISIGN_SECRET_KEY`, без него выпуск останавливается.
   Проверить секрет заранее, ничего не публикуя: workflow «Signing key check»
   (`gh workflow run signing-check.yml`).
+- GitHub Actions обновлены до версий на Node 24 (checkout v7, upload-artifact v7, download-artifact v8,
+  action-gh-release v3).
+
+### Обратите внимание
+- Обновление **на 0.5.0** ещё выполняет прежняя версия mctui, она проверяет только SHA-256. Подпись
+  проверяется начиная со следующего обновления.
+- Обновление **с 0.3.x** один раз останавливает запущенные серверы (старая служба не умеет их отпускать),
+  дальше серверы переживают обновления.
 
 ## [0.4.0] — 2026-11-13
 
@@ -157,7 +167,8 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/VeeB0/mctui/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/VeeB0/mctui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/VeeB0/mctui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/VeeB0/mctui/compare/v0.1.1...v0.2.0
