@@ -78,15 +78,26 @@ pub fn setup_fields(area: Rect, n: usize) -> Vec<Rect> {
         .collect()
 }
 
-/// Заголовки вкладок: " 1 Статус " │ " 2 Игроки " …
+/// Заголовок одной вкладки: " 1 Статус ".
 pub fn tab_label(i: usize) -> String {
     format!(" {} {} ", i + 1, TABS[i].title())
 }
 
-pub fn tab_at(tabs: Rect, x: u16) -> Option<usize> {
+/// Заголовки вкладок под ширину `avail`: полные, а если не помещаются — у неактивной остаётся только " N ".
+/// Одно правило для отрисовки и для попаданий мыши.
+pub fn tab_labels(avail: u16, active: usize) -> Vec<String> {
+    let full: Vec<String> = (0..TABS.len()).map(tab_label).collect();
+    let total = full.iter().map(|l| width(l)).sum::<u16>() + TABS.len() as u16 - 1; // + разделители
+    if total <= avail {
+        return full;
+    }
+    full.into_iter().enumerate().map(|(i, l)| if i == active { l } else { format!(" {} ", i + 1) }).collect()
+}
+
+pub fn tab_at(tabs: Rect, x: u16, active: usize) -> Option<usize> {
     let mut cur = tabs.x;
-    for i in 0..TABS.len() {
-        let w = width(&tab_label(i));
+    for (i, label) in tab_labels(tabs.width, active).iter().enumerate() {
+        let w = width(label);
         if x >= cur && x < cur + w {
             return Some(i);
         }
@@ -104,8 +115,30 @@ mod tests {
         let m = main(Rect::new(0, 0, 100, 30));
         assert_eq!(m.logs_btn.y, 0);
         assert_eq!(m.logs_btn.right(), 99);
-        assert_eq!(tab_at(m.tabs, m.tabs.x), Some(0));
+        assert_eq!(tab_at(m.tabs, m.tabs.x, 0), Some(0));
         let second = m.tabs.x + width(&tab_label(0)) + 1;
-        assert_eq!(tab_at(m.tabs, second), Some(1));
+        assert_eq!(tab_at(m.tabs, second, 0), Some(1));
+    }
+
+    #[test]
+    fn tabs_go_compact_when_they_do_not_fit() {
+        let line = |labels: &[String]| labels.iter().map(|l| width(l)).sum::<u16>() + labels.len() as u16 - 1;
+        // Широко: ничего не меняется.
+        let wide = tab_labels(200, 3);
+        assert_eq!(wide, (0..TABS.len()).map(tab_label).collect::<Vec<_>>());
+        // 80 колонок минус боковая панель и кнопка «Логи» — тесно: активная полная, остальные " N ".
+        let narrow = tab_labels(56, 3);
+        assert!(line(&narrow) <= 56, "{narrow:?}");
+        assert_eq!(narrow[3], tab_label(3));
+        assert_eq!(narrow[0], " 1 ");
+        assert_eq!(narrow[6], " 7 ");
+        // Мышь попадает по тем же подписям: и в компактную, и в активную.
+        let tabs = Rect::new(10, 1, 56, 1);
+        assert_eq!(tab_at(tabs, 10, 3), Some(0));
+        assert_eq!(tab_at(tabs, 10 + 3 + 1, 3), Some(1)); // " 1 " + "│"
+        let active_x = 10 + 3 * (3 + 1);
+        assert_eq!(tab_at(tabs, active_x, 3), Some(3));
+        assert_eq!(tab_at(tabs, active_x + width(&tab_label(3)) - 1, 3), Some(3));
+        assert_eq!(tab_at(tabs, active_x + width(&tab_label(3)) + 1, 3), Some(4));
     }
 }

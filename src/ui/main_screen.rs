@@ -180,17 +180,18 @@ fn draw_sidebar(app: &App, f: &mut Frame, area: Rect) {
 }
 
 fn draw_tabs(app: &App, f: &mut Frame, area: Rect) {
+    let active = TABS.iter().position(|t| *t == app.tab).unwrap_or(0);
     let mut spans = vec![];
-    for (i, t) in TABS.iter().enumerate() {
+    for (i, label) in layout::tab_labels(area.width, active).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled("│", Style::new().fg(theme::BORDER)));
         }
-        let style = if *t == app.tab {
+        let style = if i == active {
             Style::new().fg(theme::BUTTON_FG).bg(theme::HIGHLIGHT_BG).bold()
         } else {
             Style::new().fg(theme::MUTED)
         };
-        spans.push(Span::styled(layout::tab_label(i), style));
+        spans.push(Span::styled(label, style));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
