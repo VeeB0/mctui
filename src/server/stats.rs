@@ -119,6 +119,32 @@ pub fn player_event(line: &str) -> Option<PlayerEvent> {
     valid_name(n).then_some(ev)
 }
 
+/// «Made Steve a server operator» / «Made Steve no longer a server operator» → (ник, оп ли теперь).
+/// Работает и для строки лога, и для ответа RCON, и для эха команды игрока «[Admin: Made …]».
+pub fn op_event(line: &str) -> Option<(String, bool)> {
+    let mut msg = message(line).trim();
+    if let Some(inner) = msg.strip_prefix('[').and_then(|m| m.strip_suffix(']')) {
+        msg = inner.split_once(": ").map_or(inner, |(_, rest)| rest);
+    }
+    let rest = msg.strip_prefix("Made ")?;
+    let (name, op) = if let Some(n) = rest.strip_suffix(" no longer a server operator") {
+        (n, false)
+    } else {
+        (rest.strip_suffix(" a server operator")?, true)
+    };
+    valid_name(name).then(|| (name.to_string(), op))
+}
+
+/// Ники операторов из ops.json (в нижнем регистре — Minecraft сравнивает ники без учёта регистра).
+pub fn parse_ops(json: &str) -> Option<std::collections::BTreeSet<String>> {
+    #[derive(serde::Deserialize)]
+    struct Op {
+        name: String,
+    }
+    let ops: Vec<Op> = serde_json::from_str(json).ok()?;
+    Some(ops.into_iter().map(|o| o.name.to_lowercase()).collect())
+}
+
 pub fn is_done(line: &str) -> bool {
     let m = message(line);
     m.starts_with("Done (") && m.contains("For help")
@@ -191,5 +217,23 @@ mod tests {
         assert!(!is_done("[02:03:04 INFO]: <Steve> Done (1s)!"));
         assert_eq!(version("[02:02:58 INFO]: Starting minecraft server version 26.3").as_deref(), Some("26.3"));
         assert!(is_stopping("[02:10:00 INFO]: Stopping server"));
+    }
+
+    #[test]
+    fn op_events_and_ops_json() {
+        assert_eq!(
+            op_event("[12:00:01] [Server thread/INFO]: Made VeeBo_ a server operator"),
+            Some(("VeeBo_".into(), true))
+        );
+        assert_eq!(op_event("Made Steve no longer a server operator"), Some(("Steve".into(), false)));
+        assert_eq!(
+            op_event("[12:00:01] [Server thread/INFO]: [VeeBo_: Made Alex a server operator]"),
+            Some(("Alex".into(), true))
+        );
+        assert_eq!(op_event("[12:00:01] [Server thread/INFO]: <Steve> Made Bob a server operator"), None);
+        assert_eq!(op_event("Nothing changed. The player already is an operator"), None);
+        let ops = parse_ops(r#"[{"uuid":"16f8","name":"VeeBo_","level":4,"bypassesPlayerLimit":false}]"#).unwrap();
+        assert!(ops.contains("veebo_"));
+        assert!(parse_ops("not json").is_none());
     }
 }

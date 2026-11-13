@@ -67,6 +67,9 @@ pub struct ServerState {
     pub rcon_state: RconState,
     pub players: BTreeSet<String>,
     pub players_source: PlayersSource,
+    /// Операторы (ники в нижнем регистре) из ops.json + события op/deop.
+    pub ops: BTreeSet<String>,
+    ops_mtime: Option<std::time::SystemTime>,
     pub max_players: Option<u32>,
     pub tps: Option<[f64; 3]>,
     pub cpu: Option<f32>,
@@ -103,6 +106,8 @@ impl ServerState {
             rcon_state: RconState::Off,
             players: BTreeSet::new(),
             players_source: PlayersSource::Log,
+            ops: BTreeSet::new(),
+            ops_mtime: None,
             max_players: None,
             tps: None,
             cpu: None,
@@ -126,7 +131,38 @@ impl ServerState {
             last_poll: None,
         };
         s.reload_props();
+        s.reload_ops();
         s
+    }
+
+    /// Перечитывает ops.json, только если файл изменился (вызывается каждую секунду).
+    pub fn reload_ops(&mut self) {
+        let Some(path) = self.cfg.ops_path() else { return };
+        let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) else { return };
+        if self.ops_mtime == Some(mtime) {
+            return;
+        }
+        if let Some(ops) = std::fs::read_to_string(&path).ok().as_deref().and_then(stats::parse_ops) {
+            self.ops = ops;
+            self.ops_mtime = Some(mtime);
+        }
+    }
+
+    pub fn is_op(&self, name: &str) -> bool {
+        self.ops.contains(&name.to_lowercase())
+    }
+
+    /// Учитывает «Made X a server operator» из лога или ответа RCON — сразу, не дожидаясь ops.json.
+    pub fn note_op_text(&mut self, text: &str) {
+        for line in text.lines() {
+            if let Some((name, op)) = stats::op_event(line) {
+                if op {
+                    self.ops.insert(name.to_lowercase());
+                } else {
+                    self.ops.remove(&name.to_lowercase());
+                }
+            }
+        }
     }
 
     pub fn is_local(&self) -> bool {

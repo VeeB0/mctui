@@ -732,6 +732,7 @@ impl App {
         if let Some(v) = stats::version(text) {
             s.version = Some(v);
         }
+        s.note_op_text(text);
         match stats::player_event(text) {
             Some(PlayerEvent::Joined(n)) => {
                 s.players.insert(n);
@@ -819,6 +820,9 @@ impl App {
             }
             RconEvent::Response { kind, cmd, result } => match kind {
                 ReqKind::User => {
+                    if let Ok(body) = &result {
+                        s.note_op_text(&crate::log::strip_codes(body));
+                    }
                     let mut out = vec![format!("> {cmd}")];
                     match &result {
                         Ok(body) if body.trim().is_empty() => out.push("(пустой ответ)".into()),
@@ -831,6 +835,9 @@ impl App {
                     s.response = out;
                 }
                 ReqKind::Action => {
+                    if let Ok(body) = &result {
+                        s.note_op_text(&crate::log::strip_codes(body));
+                    }
                     let msg = match result {
                         Ok(b) if !b.trim().is_empty() => crate::log::strip_codes(b.lines().next().unwrap_or("")),
                         Ok(_) => format!("{cmd}: ок"),
@@ -906,6 +913,9 @@ impl App {
                     r.send(ReqKind::PollTps, "tps");
                 }
             }
+        }
+        for s in &mut self.servers {
+            s.reload_ops();
         }
         self.refresh_resources();
     }

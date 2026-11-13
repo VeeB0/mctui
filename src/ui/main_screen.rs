@@ -246,7 +246,25 @@ fn draw_players(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         );
         return;
     }
-    let items: Vec<ListItem> = s.players.iter().map(|p| ListItem::new(format!("  {p}"))).collect();
+    // Ширина строки внутри рамки; символ выделения «▶» занимает колонку, только когда список в фокусе.
+    let row_w = area.width.saturating_sub(if focused { 3 } else { 2 }) as usize;
+    let items: Vec<ListItem> = s
+        .players
+        .iter()
+        .map(|p| {
+            let name = format!("  {p}");
+            if !s.is_op(p) {
+                return ListItem::new(name);
+            }
+            const OP: &str = "Оп ";
+            let pad = row_w.saturating_sub(name.chars().count() + OP.chars().count()).max(1);
+            ListItem::new(Line::from(vec![
+                Span::raw(name),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(OP, Style::new().fg(theme::WARN).bold()),
+            ]))
+        })
+        .collect();
     let list = List::new(items)
         .block(block(&title, focused))
         .highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold())

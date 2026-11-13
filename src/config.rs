@@ -124,6 +124,14 @@ impl ServerConfig {
         }
     }
 
+    /// ops.json: в папке локального сервера; для RCON — рядом с log_path (…/logs/latest.log → …/ops.json).
+    pub fn ops_path(&self) -> Option<PathBuf> {
+        match self.kind {
+            Kind::Local => Some(self.dir().join("ops.json")),
+            Kind::Rcon => self.log_path.as_ref().and_then(|p| p.parent()?.parent()).map(|d| d.join("ops.json")),
+        }
+    }
+
     pub fn logs_dir(&self) -> Option<PathBuf> {
         match self.kind {
             Kind::Local => Some(self.dir().join("logs")),
