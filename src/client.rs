@@ -21,8 +21,8 @@ impl Client {
         let _ = self.tx.send(r);
     }
 
-    /// Клиент без службы (тесты): запросы никуда не уходят.
-    #[cfg(test)]
+    /// Клиент без службы (снимки экрана): запросы никуда не уходят.
+    #[cfg(all(test, not(windows)))]
     pub fn detached() -> Self {
         let (tx, _rx) = mpsc::unbounded_channel();
         Self { tx }

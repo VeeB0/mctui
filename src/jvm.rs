@@ -628,7 +628,7 @@ fn gb(mb: u64) -> String {
 
 /// Совет для строки запуска `launch` (без сети; запускает `java -version`, блокирует на доли секунды).
 /// `core` и `mc_version` — из `core_update::detect`, если известны.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn advise(dir: &Path, launch: &Launch, core: Option<Core>, mc_version: Option<&str>) -> Advice {
     let required = mc_version.and_then(|v| known_required_java(core, v));
     advise_with(launch, core, total_ram_mb(), check_java(dir, &launch.java), required)
