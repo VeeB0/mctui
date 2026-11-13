@@ -11,6 +11,7 @@ mod event;
 mod i18n;
 mod input;
 mod log;
+mod plugin_search;
 mod plugins;
 mod properties;
 mod proto;
