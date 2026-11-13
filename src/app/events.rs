@@ -88,7 +88,10 @@ impl App {
                 {
                     setup.error = Some(text.clone());
                 }
-                self.toast(text, k);
+                // Об этой команде окно уже сообщило подробнее — общая отметка «отправлено: …» его не затирает.
+                if k != ToastKind::Ok || !take_announced(&mut self.announced, &text, Instant::now()) {
+                    self.toast(text, k);
+                }
                 if self.tab == Tab::Backups {
                     self.refresh_backups();
                 }

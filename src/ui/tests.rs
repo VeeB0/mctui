@@ -10,7 +10,7 @@ use crate::client::Client;
 use crate::config::ServerConfig;
 use crate::event::AppEvent;
 use crate::i18n::{Lang, with_lang};
-use crate::proto::{Msg, RconView, Request, ServerView};
+use crate::proto::{Msg, NoticeKind, RconView, Request, ServerView};
 use crate::server::{ServerState, Status};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -53,19 +53,7 @@ fn app(servers: Vec<ServerView>) -> App {
 }
 
 fn app_with(servers: Vec<ServerView>, client: Client) -> App {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let config = PathBuf::from(NOWHERE).join("servers.toml");
-    let mut app = App::new(config.clone(), client, tx);
-    app.on_event(AppEvent::Daemon(Box::new(Msg::Welcome {
-        version: crate::update::VERSION.into(),
-        protocol: crate::proto::PROTOCOL,
-        pid: 1,
-        config_path: config,
-        language: None,
-        can_detach: true,
-    })));
-    app.on_event(AppEvent::Daemon(Box::new(Msg::State { servers })));
-    app
+    App::for_test(PathBuf::from(NOWHERE).join("servers.toml"), client, servers)
 }
 
 fn key(app: &mut App, c: char) {
@@ -566,6 +554,8 @@ async fn datapack_disabled_in_game_on_running_server_enables_in_game() {
         assert!(srv.level().join("datapacks/a.zip").is_file(), "файл не переносится");
         assert_eq!(sent_commands(&mut rx), [r#"datapack enable "file/a.zip""#]);
         assert!(toast_text(&a).contains("a: enabled in game"), "{}", toast_text(&a));
+        notice(&mut a, r#"sent: datapack enable "file/a.zip""#, NoticeKind::Ok);
+        assert!(toast_text(&a).contains("a: enabled in game"), "{}", toast_text(&a));
     });
 }
 
@@ -639,5 +629,36 @@ async fn addons_help_follows_sub_tab() {
         let h = tab_help(&a);
         assert!(h.contains("find & install (Modrinth)") && !h.contains("Hangar"), "{h}");
         assert!(h.contains("enable / disable the datapack"), "{h}");
+    });
+}
+
+fn notice(a: &mut App, text: &str, kind: NoticeKind) {
+    a.on_event(AppEvent::Daemon(Box::new(Msg::Notice { text: text.into(), kind })));
+}
+
+#[tokio::test]
+async fn datapack_toast_survives_daemon_sent_notice() {
+    let srv = TempServer::new("dp-notice");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(Some(&[]))]);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        let ours = toast_text(&a);
+        assert!(ours.contains("a: disabled · datapacks are reloading"), "{ours}");
+        // Служба на каждую команду отвечает «отправлено: …» — наше подробное сообщение остаётся.
+        notice(&mut a, "sent: minecraft:reload", NoticeKind::Ok);
+        assert_eq!(toast_text(&a), ours);
+        // Один раз на команду; чужие команды — как раньше.
+        notice(&mut a, "sent: minecraft:reload", NoticeKind::Ok);
+        assert_eq!(toast_text(&a), "sent: minecraft:reload");
+        notice(&mut a, "sent: list", NoticeKind::Ok);
+        assert_eq!(toast_text(&a), "sent: list");
+        // Ошибки показываются всегда; служба может говорить по-русски.
+        key(&mut a, ' ');
+        notice(&mut a, "sent: minecraft:reload", NoticeKind::Error);
+        assert_eq!(toast_text(&a), "sent: minecraft:reload");
+        notice(&mut a, "отправлено: minecraft:reload", NoticeKind::Ok);
+        assert_eq!(toast_text(&a), "sent: minecraft:reload", "своя отметка по-русски тоже глушится");
     });
 }

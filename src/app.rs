@@ -335,6 +335,8 @@ pub struct App {
     pub completion_hint: Option<String>,
     pub popup: Option<Popup>,
     pub toast: Option<(String, ToastKind, Instant)>,
+    /// Команды, о которых окно уже сообщило своим уведомлением: ответ службы «отправлено: …» на них не показываем.
+    announced: Vec<(String, Instant)>,
     pub should_quit: bool,
     pub exit_message: Option<String>,
     pub players_sel: usize,
@@ -408,6 +410,7 @@ impl App {
             completion_hint: None,
             popup: None,
             toast: None,
+            announced: vec![],
             should_quit: false,
             exit_message: None,
             players_sel: 0,
@@ -491,6 +494,14 @@ impl App {
 
     fn send(&self, r: Request) {
         self.client.send(r);
+    }
+
+    /// Консольная команда, о которой окно сообщает своим, более подробным уведомлением: общая отметка
+    /// службы «отправлено: <cmd>» его не затирает (ошибки показываются как обычно).
+    fn send_announced(&mut self, id: usize, cmd: String) {
+        self.announced.retain(|(_, at)| at.elapsed() < ANNOUNCED_FOR);
+        self.announced.push((cmd.clone(), Instant::now()));
+        self.send(Request::Command { id, cmd, user: false });
     }
 
     /// Запуск блокирующей работы в фоне; результат применяется к окну.
@@ -889,6 +900,45 @@ impl App {
     }
 }
 
+/// Сколько помнить команду, о которой окно уже сообщило своим уведомлением (см. [`App::send_announced`]).
+const ANNOUNCED_FOR: Duration = Duration::from_secs(5);
+
+/// Отметка службы «отправлено: <cmd>» / «sent: <cmd>» (core.rs, ответ на `Request::Command` с `user: false`)
+/// о команде из `list`, отправленной меньше [`ANNOUNCED_FOR`] назад. Совпавшая запись снимается (одна отметка —
+/// одна команда), устаревшие — тоже. Служба может говорить на другом языке, поэтому понимаем оба.
+fn take_announced(list: &mut Vec<(String, Instant)>, text: &str, now: Instant) -> bool {
+    list.retain(|(_, at)| now.duration_since(*at) < ANNOUNCED_FOR);
+    let Some(cmd) = text.strip_prefix("sent: ").or_else(|| text.strip_prefix("отправлено: ")) else {
+        return false;
+    };
+    match list.iter().position(|(c, _)| c == cmd) {
+        Some(i) => {
+            list.remove(i);
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+impl App {
+    /// Окно без службы (тесты): будто служба поздоровалась и прислала снимок `servers`.
+    pub(crate) fn for_test(config: PathBuf, client: Client, servers: Vec<ServerView>) -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = App::new(config.clone(), client, tx);
+        app.on_event(AppEvent::Daemon(Box::new(Msg::Welcome {
+            version: crate::update::VERSION.into(),
+            protocol: crate::proto::PROTOCOL,
+            pid: 1,
+            config_path: config,
+            language: None,
+            can_detach: true,
+        })));
+        app.on_event(AppEvent::Daemon(Box::new(Msg::State { servers })));
+        app
+    }
+}
+
 /// «Сейчас на сервере 2 игрока: Alex, Steve.» — для подтверждений; `None`, если никого.
 pub fn players_note(players: &[String]) -> Option<String> {
     const SHOWN: usize = 5;
@@ -953,6 +1003,19 @@ mod tests {
             assert_eq!(players_note(&p(1)).unwrap(), "1 player is online: P1.");
             assert_eq!(players_note(&p(2)).unwrap(), "2 players are online: P1, P2.");
         });
+    }
+
+    #[test]
+    fn announced_commands_match_exactly_and_expire() {
+        let t0 = Instant::now();
+        let mut list = vec![("minecraft:reload".to_string(), t0)];
+        assert!(!take_announced(&mut list, "sent: reload", t0));
+        assert!(!take_announced(&mut list, "sent: minecraft:reload now", t0));
+        assert!(take_announced(&mut list, "sent: minecraft:reload", t0 + Duration::from_secs(1)));
+        assert!(list.is_empty(), "одна отметка — одна команда");
+        list.push(("minecraft:reload".into(), t0));
+        assert!(!take_announced(&mut list, "sent: minecraft:reload", t0 + ANNOUNCED_FOR));
+        assert!(list.is_empty(), "устаревшие записи снимаются");
     }
 
     #[test]

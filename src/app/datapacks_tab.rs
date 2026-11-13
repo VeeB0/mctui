@@ -55,7 +55,7 @@ impl App {
             }
             let id = s.id;
             let quoted = d.id().replace('\\', "\\\\").replace('"', "\\\"");
-            self.send(Request::Command { id, cmd: format!("datapack enable \"{quoted}\""), user: false });
+            self.send_announced(id, format!("datapack enable \"{quoted}\""));
             return self.toast(
                 tr!(format!("{}: включён в игре", d.name), format!("{}: enabled in game", d.name)),
                 ToastKind::Ok,
@@ -116,6 +116,15 @@ impl App {
         }
         let id = s.id;
         if let Some(note) = players_note(&s.players) {
+            // Фоновая загрузка могла закончиться, пока открыто другое окно (поиск, ввод, вопрос об
+            // остановке), — не подменяем его: Enter, предназначенный ему, не должен перезагрузить датапаки.
+            if self.popup.is_some() {
+                let tail = tr!(
+                    " · датапаки не перезагружены: чтобы применить, введите minecraft:reload",
+                    " · datapacks were not reloaded: type minecraft:reload to apply"
+                );
+                return self.toast(format!("{what}{tail}"), ToastKind::Info);
+            }
             self.popup = Some(Popup::Confirm {
                 title: tr!("Перезагрузить датапаки", "Reload datapacks").into(),
                 text: format!("{note} {}", tr!("Перезагрузка даёт короткую заминку.", "A reload causes a brief lag.")),
@@ -123,7 +132,7 @@ impl App {
             });
             return self.toast(what, ToastKind::Ok);
         }
-        self.send(Request::Command { id, cmd: RELOAD_COMMAND.into(), user: false });
+        self.send_announced(id, RELOAD_COMMAND.into());
         let tail = tr!(" · датапаки перезагружаются", " · datapacks are reloading");
         self.toast(format!("{what}{tail}"), ToastKind::Ok);
     }
@@ -142,7 +151,7 @@ impl App {
     }
 
     pub(super) fn reload_datapacks(&mut self, id: usize) {
-        self.send(Request::Command { id, cmd: RELOAD_COMMAND.into(), user: false });
+        self.send_announced(id, RELOAD_COMMAND.into());
         self.toast(tr!("датапаки перезагружаются", "datapacks are reloading"), ToastKind::Ok);
     }
 
@@ -307,5 +316,41 @@ impl App {
                 app.finish_datapack_job(key, &changed, what);
             },
         );
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+    use crate::client::Client;
+    use crate::i18n::{Lang, with_lang};
+
+    #[tokio::test]
+    async fn finish_datapack_job_keeps_an_open_window() {
+        let dir = PathBuf::from("/nonexistent/pechka-finish-datapack");
+        let cfg = crate::config::ServerConfig::new_local("S", dir.join("s"), vec![], vec![]);
+        let mut v = crate::server::ServerState::new(cfg, 0).view();
+        v.status = Status::Running;
+        v.pid = Some(1);
+        v.players = vec!["Alex".into()];
+        let (client, mut rx) = Client::recording();
+        with_lang(Lang::En, || {
+            let mut a = App::for_test(dir.join("servers.toml"), client, vec![v]);
+            // Пока шла загрузка, пользователь открыл вопрос об остановке (Ctrl+X).
+            a.popup = Some(Popup::Confirm {
+                title: "Stop".into(),
+                text: "Stop?".into(),
+                action: Action::Stop { id: 0, restart: false },
+            });
+            a.finish_datapack_job(a.datapacks_key(), &[], "installed: 1".into());
+            assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::Stop { id: 0, restart: false }, .. })));
+            let toast = a.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+            assert!(toast.contains("installed: 1") && toast.contains("minecraft:reload"), "{toast}");
+            // Окна нет — обычный вопрос о перезагрузке.
+            a.popup = None;
+            a.finish_datapack_job(a.datapacks_key(), &[], "installed: 1".into());
+            assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::ReloadDatapacks(0), .. })));
+        });
+        assert!(rx.try_recv().is_err(), "без ответа пользователя ничего не отправляется");
     }
 }
