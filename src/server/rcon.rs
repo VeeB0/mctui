@@ -94,6 +94,23 @@ impl RconClient {
     /// Minecraft режет длинные ответы на пакеты по 4096 байт с тем же id. Трюк с пакетом-маркером
     /// не годится: новые версии сервера закрывают соединение на пакете неизвестного типа.
     /// Поэтому после «полного» пакета ждём продолжение недолго.
+    /// Завершается, когда сервер закрыл соединение. Между командами сервер ничего не присылает,
+    /// поэтому всё, что пришло без запроса, отбрасывается.
+    pub async fn wait_closed(&self) {
+        let mut buf = [0u8; 256];
+        loop {
+            if self.stream.readable().await.is_err() {
+                return;
+            }
+            match self.stream.try_read(&mut buf) {
+                Ok(0) => return,
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => return,
+            }
+        }
+    }
+
     pub async fn command(&mut self, cmd: &str) -> Result<String> {
         let id = self.take_id();
         let p = Packet { id, kind: TYPE_COMMAND, body: cmd.into() };
@@ -178,6 +195,21 @@ pub mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn notices_server_closing_the_connection() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let p = read_packet(&mut s).await.unwrap();
+            write_packet(&mut s, &Packet { id: p.id, kind: TYPE_COMMAND, body: String::new() }).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            // сервер остановился — соединение закрыто
+        });
+        let c = RconClient::connect("127.0.0.1", port, "pw").await.unwrap();
+        timeout(Duration::from_secs(3), c.wait_closed()).await.expect("закрытие должно быть замечено");
+    }
 
     #[test]
     fn encode_layout() {

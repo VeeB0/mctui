@@ -48,7 +48,16 @@ async fn run(
                     return;
                 }
                 loop {
-                    let Some((kind, cmd)) = rx.recv().await else {
+                    let next = tokio::select! {
+                        m = rx.recv() => m,
+                        _ = client.wait_closed() => {
+                            emit(RconEvent::Disconnected(
+                                crate::tr!("сервер закрыл соединение", "the server closed the connection").into(),
+                            ));
+                            break;
+                        }
+                    };
+                    let Some((kind, cmd)) = next else {
                         return;
                     };
                     match client.command(&cmd).await {
