@@ -154,7 +154,7 @@ pub fn install() -> Result<bool> {
             std::fs::write(
                 &unit,
                 format!(
-                    "[Unit]\nDescription=mctui — Minecraft servers in the background\n\n[Service]\nExecStart=\"{exe_s}\" daemon\nRestart=on-failure\nKillMode=mixed\nTimeoutStopSec=120\n\n[Install]\nWantedBy=default.target\n"
+                    "[Unit]\nDescription=mctui — Minecraft servers in the background\n\n[Service]\nExecStart=\"{exe_s}\" daemon\nRestart=on-failure\nKillMode=process\nTimeoutStopSec=120\n\n[Install]\nWantedBy=default.target\n"
                 ),
             )?;
             let _ = run_quiet(Command::new("systemctl").args(["--user", "daemon-reload"]));

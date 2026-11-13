@@ -132,6 +132,7 @@ fn send_welcome(mgr: &Manager, tx: &mpsc::UnboundedSender<String>) {
         pid: std::process::id(),
         config_path: mgr.config_path.clone(),
         language: mgr.language.clone(),
+        can_detach: true,
     }));
     let _ = tx.send(proto::encode(&Msg::State { servers: mgr.servers.iter().map(|s| s.view()).collect() }));
     for s in &mgr.servers {

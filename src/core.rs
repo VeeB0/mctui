@@ -5,7 +5,7 @@ use crate::backup::{self, BackupJob};
 use crate::config::{Config, Kind, ServerConfig};
 use crate::event::{AppEvent, BackupEvent, RconEvent, ReqKind, RestoreEvent};
 use crate::proto::{NoticeKind, Request, Sample};
-use crate::server::local::LocalProc;
+use crate::server::local::{Found, LocalProc};
 use crate::server::stats::{self, PlayerEvent};
 use crate::server::{PlayersSource, RconState, ServerState, Status, rcon_task};
 use crate::tr;
@@ -38,6 +38,8 @@ pub struct Manager {
     pub language: Option<String>,
     /// Идёт остановка всех серверов перед выходом службы.
     pub quitting: bool,
+    /// Служба уходит, оставляя серверы работать (перезапуск службы / обновление mctui).
+    pub detaching: bool,
     pub should_exit: bool,
     pub out: Outbox,
     next_id: usize,
@@ -58,6 +60,7 @@ impl Manager {
             config_path,
             language: cfg.language,
             quitting: false,
+            detaching: false,
             should_exit: false,
             out: Outbox { dirty: true, ..Default::default() },
             rcon_seq: 0,
@@ -71,7 +74,7 @@ impl Manager {
             m.load_sessions(i);
             if m.servers[i].cfg.kind == Kind::Rcon {
                 m.connect_rcon(i);
-            } else if m.servers[i].cfg.autostart {
+            } else if !m.attach_running(i) && m.servers[i].cfg.autostart {
                 m.start(i);
             }
         }
@@ -178,6 +181,108 @@ impl Manager {
                 }
             }
             Request::Shutdown => self.quit_stop_all(),
+            Request::Detach => self.detach(),
+        }
+    }
+
+    /// Каталог файлов состояния хранителей процессов.
+    fn run_dir(&self) -> PathBuf {
+        crate::server::local::run_dir(&self.config_path)
+    }
+
+    /// Подключиться к серверу, который продолжает работать после прошлой службы.
+    fn attach_running(&mut self, i: usize) -> bool {
+        let run_dir = self.run_dir();
+        let s = &mut self.servers[i];
+        match LocalProc::attach(s.id, &s.cfg, &run_dir, self.tx.clone()) {
+            Found::Nothing => false,
+            Found::Ended(status) => {
+                s.last_exit = Some(status.clone());
+                self.log(
+                    i,
+                    &tr!(
+                        format!("mctui: сервер завершился, пока служба не работала ({status})"),
+                        format!("mctui: the server exited while the service was down ({status})")
+                    ),
+                );
+                false
+            }
+            Found::Running(a) => {
+                let a = *a;
+                for l in &a.tail {
+                    let line = s.log.push(l).clone();
+                    if let Some(v) = stats::version(&line.text) {
+                        s.version = Some(v);
+                    }
+                    s.note_op_text(&line.text);
+                    match stats::player_event(&line.text) {
+                        Some(PlayerEvent::Joined(n)) => {
+                            s.players.insert(n);
+                        }
+                        Some(PlayerEvent::Left(n)) => {
+                            s.players.remove(&n);
+                        }
+                        None => {}
+                    }
+                }
+                // Сессии, открытые прошлой службой, закрыты по её последнему пульсу — открываем заново.
+                if let Some(log) = &mut s.sessions {
+                    for n in &s.players {
+                        log.record_join(n, Local::now());
+                    }
+                }
+                let ago = (Local::now().timestamp() - a.started).max(0) as u64;
+                let pid = a.proc.pid;
+                s.proc = Some(a.proc);
+                s.status = if a.ready { Status::Running } else { Status::Starting };
+                s.started_unix = Some(a.started);
+                s.started_at = Instant::now().checked_sub(Duration::from_secs(ago)).or(Some(Instant::now()));
+                s.user_stop = false;
+                s.reload_props();
+                self.log(
+                    i,
+                    &tr!(
+                        format!("──────── mctui: служба подключилась к работающему серверу (pid {pid}) ────────"),
+                        format!("──────── mctui: the service reattached to the running server (pid {pid}) ────────")
+                    ),
+                );
+                if a.ready {
+                    self.connect_rcon(i);
+                    self.update_schedule(i);
+                }
+                true
+            }
+        }
+    }
+
+    /// Завершить службу, не останавливая серверы. Дожидается конца бэкапов и восстановлений.
+    pub fn detach(&mut self) {
+        if self.quitting {
+            return;
+        }
+        self.detaching = true;
+        self.notice(
+            tr!(
+                "служба перезапускается, серверы продолжают работать",
+                "the service is restarting; servers keep running"
+            ),
+            NoticeKind::Info,
+        );
+        self.check_detach();
+    }
+
+    fn check_detach(&mut self) {
+        // Остановка и авто-рестарт идут в этой службе — доводим их до конца, иначе новая служба примет
+        // штатную остановку за падение.
+        if self.detaching
+            && self.servers.iter().all(|s| {
+                s.backup_progress.is_none()
+                    && !s.restoring
+                    && !matches!(s.status, Status::Stopping | Status::Restarting)
+            })
+        {
+            self.save_history();
+            self.should_exit = true;
         }
     }
 
@@ -235,7 +340,8 @@ impl Manager {
             self.notice(tr!("идёт восстановление из бэкапа", "restore in progress"), NoticeKind::Info);
             return;
         }
-        match LocalProc::spawn(s.id, &s.cfg, self.tx.clone()) {
+        let run_dir = crate::server::local::run_dir(&self.config_path);
+        match LocalProc::spawn(s.id, &s.cfg, &run_dir, self.tx.clone()) {
             Ok(p) => {
                 let line = tr!(
                     format!("──────── mctui: запуск {} (pid {}) ────────", s.cfg.command.join(" "), p.pid),
@@ -961,6 +1067,7 @@ impl Manager {
 
     /// Раз в секунду: таймауты остановки, отложенные рестарты, расписания, ресурсы, опрос RCON, графики.
     pub fn on_tick(&mut self) {
+        self.check_detach();
         let now = Instant::now();
         self.out.dirty = true;
         for i in 0..self.servers.len() {

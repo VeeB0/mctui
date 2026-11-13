@@ -64,6 +64,8 @@ pub enum Request {
     StopAll,
     /// Остановить все серверы и завершить службу.
     Shutdown,
+    /// Завершить службу, оставив серверы работать (с 0.4: их держат хранители процессов).
+    Detach,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +153,9 @@ pub enum Msg {
         pid: u32,
         config_path: PathBuf,
         language: Option<String>,
+        /// Служба умеет уйти, не останавливая серверы ([`Request::Detach`]); у служб до 0.4 — false.
+        #[serde(default)]
+        can_detach: bool,
     },
     Denied {
         reason: String,

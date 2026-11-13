@@ -348,6 +348,8 @@ pub struct App {
     pub got_state: bool,
     pub daemon_error: Option<String>,
     pub daemon_version: Option<String>,
+    /// Служба умеет перезапуститься, не останавливая серверы (с 0.4).
+    pub daemon_can_detach: bool,
     /// Служба другой версии и занята серверами — показываем предупреждение.
     pub daemon_outdated: bool,
     version_check_pending: bool,
@@ -425,6 +427,7 @@ impl App {
             daemon_version: None,
             daemon_outdated: false,
             version_check_pending: false,
+            daemon_can_detach: false,
             select_new_after: None,
             client,
             tx,
@@ -1182,8 +1185,9 @@ impl App {
 
     fn on_daemon(&mut self, m: Msg) {
         match m {
-            Msg::Welcome { version, .. } => {
+            Msg::Welcome { version, can_detach, .. } => {
                 self.connected = true;
+                self.daemon_can_detach = can_detach;
                 self.daemon_error = None;
                 self.version_check_pending = version != crate::update::VERSION;
                 self.daemon_outdated = false;
@@ -1288,7 +1292,17 @@ impl App {
         }
         if self.version_check_pending {
             self.version_check_pending = false;
-            if self.servers.iter().any(|s| s.running()) {
+            if self.daemon_can_detach {
+                // Служба другой версии уходит, серверы остаются у хранителей; окно поднимет новую.
+                self.send(Request::Detach);
+                self.toast(
+                    tr!(
+                        "служба обновляется до новой версии, серверы продолжают работать…",
+                        "updating the service to the new version; servers keep running…"
+                    ),
+                    ToastKind::Info,
+                );
+            } else if self.servers.iter().any(|s| s.running()) {
                 self.daemon_outdated = true;
             } else {
                 // Служба старой версии и ничего не запущено — перезапускаем её на текущей.

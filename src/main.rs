@@ -49,7 +49,7 @@ fn usage() -> String {
   mctui daemon                запустить фоновую службу в этом терминале
   mctui daemon status         состояние службы и серверов
   mctui daemon stop           остановить все серверы и службу
-  mctui daemon restart        перезапустить службу (серверы будут остановлены)
+  mctui daemon restart        перезапустить службу (серверы продолжают работать)
   mctui autostart on|off      запуск службы при входе в систему
   mctui update [--force]      обновить mctui (настройки сохраняются)
   mctui --version             версия
@@ -64,7 +64,7 @@ Usage:
   mctui daemon                run the background service in this terminal
   mctui daemon status         show the service and its servers
   mctui daemon stop           stop all servers and the service
-  mctui daemon restart        restart the service (servers will be stopped)
+  mctui daemon restart        restart the service (servers keep running)
   mctui autostart on|off      start the service when you log in
   mctui update [--force]      update mctui (settings are kept)
   mctui --version             show the version
@@ -135,6 +135,15 @@ fn restore_terminal() {
 }
 
 fn main() {
+    // Хранитель процесса сервера — до всего остального (без настроек и языка интерфейса).
+    let mut argv = std::env::args().skip(1);
+    if argv.next().as_deref() == Some("__keeper") {
+        let spec = PathBuf::from(argv.next().unwrap_or_default());
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio");
+        let code = rt.block_on(server::keeper::run(&spec));
+        rt.shutdown_timeout(Duration::from_millis(100));
+        std::process::exit(code)
+    }
     update::cleanup_old();
     // Язык до разбора аргументов — для справки; потом уточняется по servers.toml.
     i18n::init(None);
@@ -161,7 +170,7 @@ fn main() {
         Cmd::DaemonStatus => rt.block_on(daemon_status(&cfg_path)),
         Cmd::DaemonStop => rt.block_on(daemon_stop(&cfg_path, true)),
         Cmd::DaemonRestart => {
-            let c = rt.block_on(daemon_stop(&cfg_path, false));
+            let c = rt.block_on(daemon_restart(&cfg_path));
             if c != 0 {
                 c
             } else {
@@ -291,8 +300,74 @@ fn autostart(on: bool, cfg_path: &std::path::Path, default_config: bool) -> i32 
     }
 }
 
-/// После обновления: свободную службу перезапускаем на новой версии, занятую — не трогаем.
+/// Служба умеет уйти, оставив серверы работать?
+async fn daemon_can_detach(cfg_path: &std::path::Path) -> Option<bool> {
+    match client::status(cfg_path).await {
+        Ok(Some((proto::Msg::Welcome { can_detach, .. }, _))) => Some(can_detach),
+        _ => None,
+    }
+}
+
+/// Завершить службу, не останавливая серверы, и дождаться её выхода.
+async fn daemon_detach(cfg_path: &std::path::Path) -> bool {
+    if !matches!(client::oneshot(cfg_path, proto::Request::Detach).await, Ok(Some(_))) {
+        return false;
+    }
+    for _ in 0..1200 {
+        if !daemon::alive(cfg_path).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
+/// `mctui daemon restart`: с 0.4 серверы продолжают работать; старую службу приходится останавливать с ними.
+async fn daemon_restart(cfg_path: &std::path::Path) -> i32 {
+    match daemon_can_detach(cfg_path).await {
+        Some(true) => {
+            println!(
+                "{}",
+                tr!(
+                    "Перезапускаю службу, серверы продолжают работать…",
+                    "Restarting the service; servers keep running…"
+                )
+            );
+            if daemon_detach(cfg_path).await {
+                0
+            } else {
+                eprintln!("{}", tr!("служба не завершилась", "the service did not exit"));
+                1
+            }
+        }
+        Some(false) => {
+            println!(
+                "{}",
+                tr!(
+                    "Служба старой версии не умеет перезапускаться без остановки серверов — они будут остановлены.",
+                    "The old service cannot restart without stopping the servers — they will be stopped."
+                )
+            );
+            daemon_stop(cfg_path, false).await
+        }
+        None => 0,
+    }
+}
+
+/// После обновления: службу перезапускаем на новой версии; старую (до 0.4) с работающими серверами не трогаем.
 async fn after_update(cfg_path: &std::path::Path) {
+    if daemon_can_detach(cfg_path).await == Some(true) {
+        if daemon_detach(cfg_path).await {
+            println!(
+                "{}",
+                tr!(
+                    "Служба перезапустится на новой версии при открытии mctui; серверы продолжают работать.",
+                    "The service restarts on the new version when you open mctui; servers keep running."
+                )
+            );
+        }
+        return;
+    }
     match client::status(cfg_path).await {
         Ok(Some((_, servers))) if servers.iter().any(|s| s.running()) => println!(
             "{}",

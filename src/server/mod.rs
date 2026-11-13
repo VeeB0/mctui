@@ -1,3 +1,4 @@
+pub mod keeper;
 pub mod local;
 pub mod rcon;
 pub mod rcon_task;
