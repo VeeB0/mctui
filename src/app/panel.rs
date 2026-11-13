@@ -36,8 +36,10 @@ pub enum PanelKind {
         target: Target,
         query: String,
         hits: Vec<SearchHit>,
-        offset: usize,
+        page: usize,
         more: bool,
+        /// Номер запроса: ответ на запрос закрытого окна (или устаревший) отбрасывается.
+        req: u64,
     },
     LogSearch {
         query: String,
@@ -101,6 +103,17 @@ impl Panel {
             input_focus: false,
         }
     }
+}
+
+/// Фоновая работа поиска; в тестах не ходит в сеть.
+fn search_addons(query: &str, target: &Target, page: usize) -> anyhow::Result<ps::SearchResults> {
+    #[cfg(test)]
+    {
+        let _ = (query, target, page);
+        Ok(ps::SearchResults::default())
+    }
+    #[cfg(not(test))]
+    ps::search(query, target, page)
 }
 
 fn pad(s: &str, w: usize) -> String {
@@ -211,6 +224,9 @@ impl App {
             AddonsSub::Plugins => {
                 let hint = s.cfg.command.join(" ");
                 let Some(target) = Target::detect(s.cfg.dir(), &hint, s.version.as_deref()) else {
+                    if self.plugins.core == Some(AddonsCore::Vanilla) {
+                        return self.toast(vanilla_addons_text(), ToastKind::Info);
+                    }
                     return self.toast(
                         tr!(
                             "Не удалось понять ядро сервера (Paper / Fabric / …) — поиск недоступен",
@@ -243,7 +259,7 @@ impl App {
         };
         let mut panel = Panel::new(
             title,
-            PanelKind::PluginSearch { target, query: String::new(), hits: vec![], offset: 0, more: false },
+            PanelKind::PluginSearch { target, query: String::new(), hits: vec![], page: 0, more: false, req: 0 },
             tr!(
                 "Enter — искать / установить · ↓ к списку · Tab — к строке поиска · n — ещё · Esc — закрыть",
                 "Enter — search / install · ↓ to the list · Tab — to the search box · n — more · Esc — close"
@@ -257,97 +273,129 @@ impl App {
             format!(
                 "{} {sources}",
                 tr!(
-                    "Введите название (пустой запрос — популярное).",
-                    "Type a name (an empty query shows popular ones)."
+                    "Сейчас — популярное. Введите название и нажмите Enter.",
+                    "Showing popular ones. Type a name and press Enter."
                 )
             ),
         )];
+        // Пустой запрос — популярное; грузится в фоне, строка ввода доступна сразу.
+        self.run_plugin_search(&mut panel, false);
         self.popup = Some(Popup::Panel(Box::new(panel)));
     }
 
     fn run_plugin_search(&mut self, p: &mut Panel, next_page: bool) {
-        let PanelKind::PluginSearch { target, query, hits, offset, .. } = &mut p.kind else { return };
+        self.search_gen = self.search_gen.wrapping_add(1);
+        let req = self.search_gen;
+        let PanelKind::PluginSearch { target, query, hits, page, req: cur_req, .. } = &mut p.kind else { return };
+        *cur_req = req;
         if !next_page {
             *query = p.input.as_ref().map(|i| i.value.trim().to_string()).unwrap_or_default();
             hits.clear();
-            *offset = 0;
+            *page = 0;
             p.items.clear();
             p.sel = 0;
         } else {
-            *offset += ps::PAGE_SIZE;
+            *page += 1;
         }
-        let (q, t, off) = (query.clone(), target.clone(), *offset);
-        // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
-        let legend = if t.kind() == PluginKind::Datapack { "" } else { " · M — Modrinth, H — Hangar" };
+        let (q, t, pg) = (query.clone(), target.clone(), *page);
         p.busy = Some(tr!("ищу…", "searching…").into());
-        self.spawn_task(
-            move || ps::search(&q, &t, off),
-            move |app, res| {
-                let mut warn = None;
-                app.with_panel(|p| {
-                    p.busy = None;
-                    let PanelKind::PluginSearch { hits, more, .. } = &mut p.kind else { return };
-                    match res {
-                        Ok(r) => {
-                            for h in r.hits {
-                                if !hits.iter().any(|x| x.source == h.source && x.id == h.id) {
-                                    hits.push(h);
-                                }
-                            }
-                            *more = r.more;
-                            warn = (!r.warnings.is_empty()).then(|| r.warnings.join("; "));
-                            p.header = Some(format!(
-                                "{}{}{}{}",
-                                pad(tr!("Название", "Name"), 28),
-                                pad(tr!("Автор", "Author"), 18),
-                                pad(tr!("Скачиваний", "Downloads"), 12),
-                                tr!("Описание", "Description")
-                            ));
-                            p.items = hits
-                                .iter()
-                                .map(|h| {
-                                    format!(
-                                        "{}{}{}{}",
-                                        pad(
-                                            &format!(
-                                                "{} {}",
-                                                if h.source == ps::Source::Hangar { "H" } else { "M" },
-                                                h.title
-                                            ),
-                                            28
-                                        ),
-                                        pad(&h.author, 18),
-                                        pad(&human_count(h.downloads), 12),
-                                        h.description
-                                    )
-                                })
-                                .collect();
-                            p.lines = vec![PanelLine::new(
-                                Tone::Muted,
-                                if hits.is_empty() {
-                                    tr!("ничего не найдено", "nothing found").to_string()
-                                } else {
-                                    tr!(
-                                        format!("найдено: {}{}{legend}", hits.len(), if *more { "+" } else { "" }),
-                                        format!("found: {}{}{legend}", hits.len(), if *more { "+" } else { "" })
-                                    )
-                                },
-                            )];
-                            if !hits.is_empty() {
-                                p.input_focus = false;
-                            }
+        self.spawn_task(move || search_addons(&q, &t, pg), move |app, res| app.apply_plugin_search(req, res));
+    }
+
+    /// Применяет ответ поиска. Ответ на устаревший запрос (панель уже ждёт другой или это уже другое окно)
+    /// молча отбрасывается.
+    pub(crate) fn apply_plugin_search(&mut self, req: u64, res: anyhow::Result<ps::SearchResults>) {
+        let mut warn = None;
+        self.with_panel(|p| {
+            let PanelKind::PluginSearch { target, query, hits, page: cur_page, more, req: cur_req } = &mut p.kind
+            else {
+                return;
+            };
+            if *cur_req != req {
+                return;
+            }
+            let popular = query.is_empty();
+            p.busy = None;
+            // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
+            let legend = if target.kind() == PluginKind::Datapack { "" } else { " · M — Modrinth, H — Hangar" };
+            match res {
+                Ok(r) => {
+                    for h in r.hits {
+                        // Тот же проект из другого источника (страницы набираются порознь) — не дублируем.
+                        let (t, s) = (ps::norm(&h.title), ps::norm(&h.slug));
+                        let dup = hits.iter().any(|x| {
+                            (x.source == h.source && x.id == h.id)
+                                || (x.source != h.source && (ps::norm(&x.title) == t || ps::norm(&x.slug) == s))
+                        });
+                        if !dup {
+                            hits.push(h);
                         }
-                        Err(e) => p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}"))],
                     }
-                });
-                if let Some(w) = warn {
-                    app.toast(w, ToastKind::Error);
+                    *more = r.more;
+                    warn = (!r.warnings.is_empty()).then(|| r.warnings.join("; "));
+                    p.header = Some(format!(
+                        "{}{}{}{}",
+                        pad(tr!("Название", "Name"), 28),
+                        pad(tr!("Автор", "Author"), 18),
+                        pad(tr!("Скачиваний", "Downloads"), 12),
+                        tr!("Описание", "Description")
+                    ));
+                    p.items = hits
+                        .iter()
+                        .map(|h| {
+                            format!(
+                                "{}{}{}{}",
+                                pad(
+                                    &format!("{} {}", if h.source == ps::Source::Hangar { "H" } else { "M" }, h.title),
+                                    28
+                                ),
+                                pad(&h.author, 18),
+                                pad(&human_count(h.downloads), 12),
+                                h.description
+                            )
+                        })
+                        .collect();
+                    p.lines = vec![PanelLine::new(
+                        Tone::Muted,
+                        if hits.is_empty() {
+                            tr!("ничего не найдено", "nothing found").to_string()
+                        } else {
+                            let n = format!("{}{}", hits.len(), if *more { "+" } else { "" });
+                            if popular {
+                                tr!(
+                                    format!("популярное: {n} · введите название и Enter{legend}"),
+                                    format!("popular: {n} · type a name and press Enter{legend}")
+                                )
+                            } else {
+                                tr!(format!("найдено: {n}{legend}"), format!("found: {n}{legend}"))
+                            }
+                        },
+                    )];
+                    if !hits.is_empty() && !popular {
+                        p.input_focus = false;
+                    }
                 }
-            },
-        );
+                Err(e) => {
+                    // Следующая «n» повторит ту же страницу, а не перескочит через неё.
+                    *cur_page = cur_page.saturating_sub(1);
+                    let retry = if popular && *cur_page == 0 {
+                        tr!(" · Enter — повторить", " · Enter to retry")
+                    } else {
+                        ""
+                    };
+                    p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}{retry}"))];
+                }
+            }
+        });
+        if let Some(w) = warn {
+            self.toast(w, ToastKind::Error);
+        }
     }
 
     fn pick_plugin(&mut self, p: &mut Panel) {
+        if p.busy.is_some() {
+            return;
+        }
         let PanelKind::PluginSearch { target, hits, .. } = &p.kind else { return };
         let Some(hit) = hits.get(p.sel).cloned() else { return };
         let target = target.clone();
@@ -730,7 +778,9 @@ impl App {
                         return self.probe_network(facts, true);
                     }
                 }
-                ('n', PanelKind::PluginSearch { more: true, .. }) => self.run_plugin_search(&mut p, true),
+                ('n', PanelKind::PluginSearch { more: true, .. }) if p.busy.is_none() => {
+                    self.run_plugin_search(&mut p, true)
+                }
                 (' ', PanelKind::Velocity { .. }) => self.toggle_velocity_backend(&mut p),
                 ('u', PanelKind::Compat { done: true, .. }) if p.busy.is_none() => self.install_compat(&mut p),
                 _ => {}

@@ -48,6 +48,8 @@ mod tools;
 mod world_tab;
 pub use backup_health::{BackupHealth, ago};
 pub use logs_screen::{LevelFilter, LogSource, LogsView};
+#[cfg(test)]
+pub(crate) use panel::PanelKind;
 pub use panel::{Panel, Tone};
 pub use world_tab::{WorldRow, WorldView};
 
@@ -285,7 +287,25 @@ pub struct PluginsView {
     pub checking: bool,
     pub checked: bool,
     pub busy: Option<String>,
+    /// Что умеет ядро сервера; определяется только при перечитывании списка.
+    pub core: Option<AddonsCore>,
     loaded_for: Option<usize>,
+}
+
+/// Что ядро сервера принимает во вкладке «Дополнения».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddonsCore {
+    Plugins,
+    Mods,
+    Vanilla,
+}
+
+/// Пояснение для ванильного ядра: плагины и моды ему недоступны.
+pub fn vanilla_addons_text() -> &'static str {
+    tr!(
+        "Ванильное ядро не поддерживает плагины и моды — только датапаки",
+        "The vanilla core supports no plugins or mods — only datapacks"
+    )
 }
 
 /// Подвкладка вкладки «Дополнения».
@@ -348,6 +368,8 @@ pub struct App {
     backups_at: Option<Instant>,
     pub access: AccessView,
     pub plugins: PluginsView,
+    /// Номер последнего запроса поиска дополнений (см. `PanelKind::PluginSearch::req`).
+    pub(crate) search_gen: u64,
     pub addons: AddonsNav,
     pub datapacks: DatapacksView,
     pub world: WorldView,
@@ -430,6 +452,7 @@ impl App {
                 busy: false,
             },
             world: WorldView::default(),
+            search_gen: 0,
             plugins: PluginsView {
                 items: vec![],
                 sel: 0,
@@ -437,6 +460,7 @@ impl App {
                 checking: false,
                 checked: false,
                 busy: None,
+                core: None,
                 loaded_for: None,
             },
             addons: AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs },

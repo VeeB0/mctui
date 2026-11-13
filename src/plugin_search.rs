@@ -1,6 +1,6 @@
 //! Поиск и установка новых плагинов / модов: Modrinth (`/v2/search`) и Hangar (PaperMC, только для Paper / Purpur).
 //!
-//! Поток для интерфейса: [`Target::detect`] → [`search`] (страницами по [`PAGE_SIZE`]) → [`resolve`] выбранного
+//! Поток для интерфейса: [`Target::detect`] → [`search`] (страницами по [`PAGE_SIZE`], пустой запрос — самое скачиваемое) → [`resolve`] выбранного
 //! результата (новейшая совместимая версия + обязательные зависимости, уже установленные пропускаются) →
 //! подтверждение пользователем → [`install`]. Для «готовых рецептов» (например, Chunky для прогрузки мира) —
 //! [`plan_by_slug`].
@@ -21,8 +21,8 @@ use crate::plugins::{self, MrDependency, MrVersion, PluginKind};
 use crate::tr;
 
 pub(crate) const HANGAR_API: &str = "https://hangar.papermc.io/api/v1";
-/// Результатов на страницу из каждого источника.
-pub const PAGE_SIZE: usize = 20;
+/// Результатов на страницу. С двумя источниками — по `PAGE_SIZE / 2` от каждого.
+pub const PAGE_SIZE: usize = 10;
 /// Сколько версий проекта смотреть при выборе совместимой.
 const VERSIONS_LIMIT: usize = 25;
 /// Глубина рекурсии по зависимостям (защита от странных графов).
@@ -228,7 +228,7 @@ pub(crate) fn enc(s: &str) -> String {
 }
 
 /// Нормализованное имя для сравнения: только буквы/цифры в нижнем регистре («Fabric API» = «fabric-api»).
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
@@ -271,7 +271,7 @@ pub struct SearchResults {
     pub hits: Vec<SearchHit>,
     /// Недоступный источник при частичном успехе (двуязычный текст для тоста).
     pub warnings: Vec<String>,
-    /// Есть ли следующая страница (`offset + PAGE_SIZE`) хотя бы в одном источнике.
+    /// Есть ли следующая страница хотя бы в одном источнике.
     pub more: bool,
 }
 
@@ -293,18 +293,23 @@ fn modrinth_facets(target: &Target) -> serde_json::Value {
     serde_json::json!(facets)
 }
 
-fn modrinth_search_url(query: &str, target: &Target, offset: usize) -> String {
+fn modrinth_search_url(query: &str, target: &Target, per: usize, offset: usize) -> String {
+    // Пустой запрос — самое скачиваемое, иначе по релевантности.
+    let index = if query.trim().is_empty() { "downloads" } else { "relevance" };
     format!(
-        "{}/search?query={}&limit={PAGE_SIZE}&offset={offset}&index=relevance&facets={}",
+        "{}/search?query={}&limit={per}&offset={offset}&index={index}&facets={}",
         plugins::MODRINTH_API,
         enc(query.trim()),
         enc(&modrinth_facets(target).to_string())
     )
 }
 
-fn hangar_search_url(query: &str, platform: &str, target: &Target, offset: usize) -> String {
-    let mut url = format!("{HANGAR_API}/projects?limit={PAGE_SIZE}&offset={offset}&platform={platform}");
-    if !query.trim().is_empty() {
+fn hangar_search_url(query: &str, platform: &str, target: &Target, per: usize, offset: usize) -> String {
+    let mut url = format!("{HANGAR_API}/projects?limit={per}&offset={offset}&platform={platform}");
+    if query.trim().is_empty() {
+        // Без `sort` Hangar отдаёт случайные свежие проекты.
+        url.push_str("&sort=-downloads");
+    } else {
         url.push_str(&format!("&q={}", enc(query.trim())));
     }
     if let Some(gv) = target.gv() {
@@ -418,14 +423,15 @@ fn parse_hangar_search(json: &str, platform: &str) -> Result<(Vec<SearchHit>, us
     Ok((r.result.into_iter().map(|p| p.into_hit(platform)).collect(), r.pagination.count))
 }
 
-/// Склеивает выдачу: сначала Modrinth, затем проекты Hangar, которых нет на Modrinth (по имени или slug).
+/// Склеивает выдачу вперемешку: Modrinth, Hangar, Modrinth, Hangar… (остаток длинного списка — следом).
+/// Проекты Hangar, которые уже есть на Modrinth (по имени или slug), отбрасываются.
 fn merge_hits(modrinth: Vec<SearchHit>, hangar: Vec<SearchHit>) -> Vec<SearchHit> {
     let mut seen: HashSet<String> = HashSet::new();
     for h in &modrinth {
         seen.insert(norm(&h.title));
         seen.insert(norm(&h.slug));
     }
-    let mut out = modrinth;
+    let mut unique = Vec::new();
     for h in hangar {
         let (t, s) = (norm(&h.title), norm(&h.slug));
         if seen.contains(&t) || seen.contains(&s) {
@@ -433,27 +439,41 @@ fn merge_hits(modrinth: Vec<SearchHit>, hangar: Vec<SearchHit>) -> Vec<SearchHit
         }
         seen.insert(t);
         seen.insert(s);
-        out.push(h);
+        unique.push(h);
+    }
+    let mut out = Vec::with_capacity(modrinth.len() + unique.len());
+    let (mut m, mut h) = (modrinth.into_iter(), unique.into_iter());
+    loop {
+        let (a, b) = (m.next(), h.next());
+        if a.is_none() && b.is_none() {
+            break;
+        }
+        out.extend(a);
+        out.extend(b);
     }
     out
 }
 
-/// Ищет плагины/моды под сервер. Пустой запрос — популярное. `offset` — смещение страницы в каждом
-/// источнике (0, PAGE_SIZE, 2·PAGE_SIZE…). Если один источник недоступен, результат другого возвращается
+/// Ищет плагины/моды под сервер. Пустой запрос — самое скачиваемое. `page` — номер страницы с 0; у двух
+/// источников каждый отдаёт `PAGE_SIZE / 2` со смещением `page * (PAGE_SIZE / 2)`, выдача чередуется M, H…
+/// Если один источник недоступен, результат другого возвращается
 /// с предупреждением в `warnings`; ошибка — только если не ответил ни один.
 /// Дубли между страницами не убираются — при подгрузке «ещё» сравнивайте `source` + `id`.
-pub fn search(query: &str, target: &Target, offset: usize) -> Result<SearchResults> {
-    search_with(&Curl, query, target, offset)
+pub fn search(query: &str, target: &Target, page: usize) -> Result<SearchResults> {
+    search_with(&Curl, query, target, page)
 }
 
-pub(crate) fn search_with(http: &dyn Http, query: &str, target: &Target, offset: usize) -> Result<SearchResults> {
+pub(crate) fn search_with(http: &dyn Http, query: &str, target: &Target, page: usize) -> Result<SearchResults> {
+    let sources = if target.platform.hangar().is_some() { 2 } else { 1 };
+    let per = PAGE_SIZE / sources;
+    let offset = page * per;
     let mut res = SearchResults::default();
     let mut errors = Vec::new();
 
     let modrinth = (|| -> Result<Vec<SearchHit>> {
-        let body = http.get(&modrinth_search_url(query, target, offset))?.unwrap_or_default();
+        let body = http.get(&modrinth_search_url(query, target, per, offset))?.unwrap_or_default();
         let (hits, total) = parse_modrinth_search(&body)?;
-        res.more |= offset + PAGE_SIZE < total;
+        res.more |= offset + per < total;
         Ok(hits)
     })();
     let modrinth = modrinth.unwrap_or_else(|e| {
@@ -464,9 +484,9 @@ pub(crate) fn search_with(http: &dyn Http, query: &str, target: &Target, offset:
     let mut hangar = Vec::new();
     if let Some(platform) = target.platform.hangar() {
         let r = (|| -> Result<Vec<SearchHit>> {
-            let body = http.get(&hangar_search_url(query, platform, target, offset))?.unwrap_or_default();
+            let body = http.get(&hangar_search_url(query, platform, target, per, offset))?.unwrap_or_default();
             let (hits, total) = parse_hangar_search(&body, platform)?;
-            res.more |= offset + PAGE_SIZE < total;
+            res.more |= offset + per < total;
             Ok(hits)
         })();
         match r {
@@ -475,7 +495,6 @@ pub(crate) fn search_with(http: &dyn Http, query: &str, target: &Target, offset:
         }
     }
 
-    let sources = if target.platform.hangar().is_some() { 2 } else { 1 };
     if errors.len() == sources {
         bail!(tr!(format!("поиск не удался: {}", errors.join("; ")), format!("search failed: {}", errors.join("; "))));
     }
@@ -1321,14 +1340,16 @@ mod tests {
                 ["server_side!=unsupported"]
             ])
         );
-        let url = modrinth_search_url("world edit", &paper(None), 20);
-        assert!(url.starts_with("https://api.modrinth.com/v2/search?query=world%20edit&limit=20&offset=20&"));
+        let url = modrinth_search_url("world edit", &paper(None), 5, 10);
+        assert!(
+            url.starts_with("https://api.modrinth.com/v2/search?query=world%20edit&limit=5&offset=10&index=relevance&")
+        );
         assert!(url.contains("facets=%5B%5B%22project_type%3Aplugin%22%5D"), "{url}");
         assert_eq!(
-            hangar_search_url("chunky", "PAPER", &paper(Some("26.3")), 0),
-            "https://hangar.papermc.io/api/v1/projects?limit=20&offset=0&platform=PAPER&q=chunky&version=26.3"
+            hangar_search_url("chunky", "PAPER", &paper(Some("26.3")), 5, 0),
+            "https://hangar.papermc.io/api/v1/projects?limit=5&offset=0&platform=PAPER&q=chunky&version=26.3"
         );
-        assert!(!hangar_search_url(" ", "PAPER", &paper(None), 0).contains("q="));
+        assert!(!hangar_search_url(" ", "PAPER", &paper(None), 5, 0).contains("q="));
         assert_eq!(enc("a+b/ж"), "a%2Bb%2F%D0%B6");
         assert_eq!(norm("Fabric API"), norm("fabric-api"));
         assert_eq!(
@@ -1396,18 +1417,18 @@ mod tests {
         let ids: Vec<(Source, &str)> = merged.iter().map(|h| (h.source, h.title.as_str())).collect();
         assert_eq!(
             ids,
-            [(Source::Modrinth, "Chunky"), (Source::Modrinth, "Chunky Border"), (Source::Hangar, "ViaBackwards")]
+            [(Source::Modrinth, "Chunky"), (Source::Hangar, "ViaBackwards"), (Source::Modrinth, "Chunky Border")]
         );
     }
 
     #[test]
     fn search_partial_failure() {
         let http = FakeHttp::default().route("api.modrinth.com/v2/search", MR_SEARCH).fail("hangar.papermc.io");
-        let r = search_with(&http, "chunky", &paper(Some("26.3")), 0).unwrap();
+        let r = search_with(&http, "chunky", &paper(Some("26.3")), 1).unwrap();
         assert_eq!(r.hits.len(), 2);
         assert_eq!(r.warnings.len(), 1);
         assert!(r.warnings[0].contains("Hangar"), "{:?}", r.warnings);
-        assert!(!r.more);
+        assert!(!r.more, "page 1 of 9 hits at 5 per page is the last");
 
         let http = FakeHttp::default().fail("api.modrinth.com").route("hangar.papermc.io", HG_SEARCH);
         let r = search_with(&http, "chunky", &paper(None), 0).unwrap();
@@ -1425,6 +1446,58 @@ mod tests {
         assert!(http.log.borrow().iter().all(|u| !u.contains("hangar")));
         let http = FakeHttp::default().fail("api.modrinth.com");
         assert!(search_with(&http, "", &Target::new(Platform::Fabric, None), 0).is_err());
+    }
+
+    fn hit(source: Source, title: &str) -> SearchHit {
+        SearchHit {
+            source,
+            id: title.into(),
+            slug: title.to_lowercase(),
+            title: title.into(),
+            author: String::new(),
+            description: String::new(),
+            downloads: 0,
+            latest_game_version: None,
+            page: String::new(),
+        }
+    }
+
+    #[test]
+    fn hits_alternate_sources() {
+        let mr = vec![hit(Source::Modrinth, "A"), hit(Source::Modrinth, "B"), hit(Source::Modrinth, "C")];
+        let hg = vec![hit(Source::Hangar, "X"), hit(Source::Hangar, "Y")];
+        let titles = |v: Vec<SearchHit>| v.into_iter().map(|h| h.title).collect::<Vec<_>>();
+        assert_eq!(titles(merge_hits(mr.clone(), hg.clone())), ["A", "X", "B", "Y", "C"]);
+        // Дубль Hangar по имени выпадает, порядок остальных сохраняется.
+        let hg = vec![hit(Source::Hangar, "X"), hit(Source::Hangar, "b"), hit(Source::Hangar, "Y")];
+        assert_eq!(titles(merge_hits(mr, hg)), ["A", "X", "B", "Y", "C"]);
+    }
+
+    #[test]
+    fn empty_query_sorts_by_downloads() {
+        let http = FakeHttp::default().route("api.modrinth.com", MR_SEARCH).route("hangar.papermc.io", HG_SEARCH);
+        search_with(&http, "", &paper(Some("26.3")), 0).unwrap();
+        {
+            let log = http.log.borrow();
+            let (mr, hg) = (&log[0], &log[1]);
+            assert!(mr.contains("index=downloads") && mr.contains("limit=5&offset=0"), "{mr}");
+            assert!(hg.contains("sort=-downloads") && hg.contains("limit=5&offset=0"), "{hg}");
+        }
+        http.log.borrow_mut().clear();
+        search_with(&http, "chunky", &paper(Some("26.3")), 1).unwrap();
+        let log = http.log.borrow();
+        let (mr, hg) = (&log[0], &log[1]);
+        assert!(mr.contains("index=relevance") && mr.contains("limit=5&offset=5"), "{mr}");
+        assert!(hg.contains("limit=5&offset=5") && !hg.contains("sort="), "{hg}");
+    }
+
+    #[test]
+    fn single_source_pages_by_ten() {
+        let http = FakeHttp::default().route("api.modrinth.com", MR_SEARCH);
+        search_with(&http, "", &Target::new(Platform::Fabric, None), 2).unwrap();
+        let log = http.log.borrow();
+        assert_eq!(log.len(), 1);
+        assert!(log[0].contains("limit=10&offset=20"), "{}", log[0]);
     }
 
     fn mr_version(id: &str, project: &str, date: &str, vtype: &str, loaders: &[&str], deps: &str) -> String {
@@ -1684,7 +1757,7 @@ mod tests {
     #[test]
     fn datapack_facets_and_no_hangar() {
         let t = Target::new(Platform::Datapack, Some("26.3"));
-        let url = modrinth_search_url("", &t, 0);
+        let url = modrinth_search_url("", &t, 5, 0);
         let decoded = url.replace("%3A", ":").replace("%22", "\"");
         for want in ["project_type:datapack", "categories:datapack", "versions:26.3"] {
             assert!(decoded.contains(want), "{want} not in {decoded}");
@@ -1934,7 +2007,7 @@ mod tests {
         assert_eq!(chunky.len(), 1, "deduped");
         assert_eq!(chunky[0].source, Source::Modrinth);
         assert!(r.hits.iter().any(|h| h.source == Source::Hangar), "Hangar-only results are merged in");
-        let page2 = search("chunky", &paper, PAGE_SIZE).unwrap();
+        let page2 = search("chunky", &paper, 1).unwrap();
         assert!(!page2.hits.is_empty());
 
         let t = TempDir::new("net");

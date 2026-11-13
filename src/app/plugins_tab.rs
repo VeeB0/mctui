@@ -6,6 +6,7 @@ impl App {
     pub(super) fn refresh_plugins(&mut self, force: bool) {
         if !self.has_server() || !self.sel().is_local() {
             self.plugins.items.clear();
+            self.plugins.core = None;
             self.plugins.loaded_for = None;
             return;
         }
@@ -19,6 +20,7 @@ impl App {
         }
         self.plugins.loaded_for = Some(id);
         self.plugins.items = plugins::scan(self.sel().cfg.dir());
+        self.plugins.core = detect_addons_core(self.sel().cfg.dir(), &self.sel().cfg.command);
         self.plugins.sel = self.plugins.sel.min(self.plugins.items.len().saturating_sub(1));
     }
 
@@ -167,4 +169,14 @@ impl App {
             },
         );
     }
+}
+
+/// Ядро по папке сервера: плагины, моды или ваниль (без плагинов и модов). `None` — не поняли.
+fn detect_addons_core(dir: &std::path::Path, command: &[String]) -> Option<AddonsCore> {
+    if let Some(p) = crate::plugin_search::Platform::detect(dir, &command.join(" ")) {
+        return Some(if p.kind() == plugins::PluginKind::Mod { AddonsCore::Mods } else { AddonsCore::Plugins });
+    }
+    crate::core_update::detect_with(dir, command)
+        .filter(|i| i.core == crate::create::Core::Vanilla)
+        .map(|_| AddonsCore::Vanilla)
 }

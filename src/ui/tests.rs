@@ -753,6 +753,171 @@ async fn datapack_search_works_without_core() {
     });
 }
 
+fn addons_screen(a: &mut App) -> String {
+    key(a, '4');
+    render(a, 160, 30)
+}
+
+#[tokio::test]
+async fn fabric_without_mods_is_called_mods() {
+    let srv = TempServer::new("fabric-mods");
+    std::fs::write(srv.0.join("fabric-server-launch.jar"), b"").unwrap();
+    std::fs::create_dir_all(srv.0.join("mods")).unwrap();
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        let screen = addons_screen(&mut a);
+        assert!(screen.contains("Mods (0)"), "{screen}");
+        assert!(screen.contains("No mods · i to find and install"), "{screen}");
+    });
+}
+
+#[tokio::test]
+async fn paper_is_called_plugins() {
+    let srv = paper_search("paper-plugins");
+    std::fs::create_dir_all(srv.0.join("plugins")).unwrap();
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        let screen = addons_screen(&mut a);
+        assert!(screen.contains("Plugins (0)"), "{screen}");
+        assert!(!screen.contains("No mods"), "{screen}");
+    });
+}
+
+#[tokio::test]
+async fn vanilla_says_only_datapacks() {
+    let srv = TempServer::new("vanilla-addons");
+    crate::datapacks::tests::make_zip(&srv.0.join("server.jar"), &[("version.json", r#"{"id":"26.3"}"#)]);
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        let screen = addons_screen(&mut a);
+        let text = "The vanilla core supports no plugins or mods — only datapacks";
+        assert!(screen.contains(text), "{screen}");
+        key(&mut a, 'i');
+        assert!(a.popup.is_none());
+        assert_eq!(toast_text(&a), text);
+    });
+}
+
+fn search_req(a: &App) -> u64 {
+    let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+    let crate::app::PanelKind::PluginSearch { req, .. } = &p.kind else { panic!("ждали поиск") };
+    *req
+}
+
+fn paper_search(tag: &str) -> TempServer {
+    let srv = TempServer::new(tag);
+    std::fs::write(srv.0.join("paper.jar"), b"").unwrap();
+    srv
+}
+
+fn one_hit(title: &str) -> anyhow::Result<crate::plugin_search::SearchResults> {
+    hit_from(crate::plugin_search::Source::Modrinth, title)
+}
+
+fn hit_from(source: crate::plugin_search::Source, title: &str) -> anyhow::Result<crate::plugin_search::SearchResults> {
+    use crate::plugin_search::{SearchHit, SearchResults};
+    Ok(SearchResults {
+        hits: vec![SearchHit {
+            source,
+            id: format!("{source:?}-{title}"),
+            slug: title.to_lowercase(),
+            title: title.into(),
+            description: String::new(),
+            author: "me".into(),
+            downloads: 1,
+            latest_game_version: None,
+            page: String::new(),
+        }],
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn addon_search_loads_popular_on_open() {
+    let srv = paper_search("popular-open");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert_eq!(p.busy.as_deref(), Some("searching…"));
+        assert!(p.input.as_ref().unwrap().value.is_empty());
+        assert!(p.input_focus);
+        assert!(p.lines[0].text.contains("Showing popular ones."), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_ignores_stale_popular() {
+    let srv = paper_search("popular-stale");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let old_req = search_req(&a);
+        for c in "chunky".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        a.apply_plugin_search(old_req, one_hit("Old"));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.items.iter().all(|r| !r.contains("Old")), "{:?}", p.items);
+        assert!(p.busy.is_some(), "новый запрос ещё идёт");
+        a.apply_plugin_search(search_req(&a), one_hit("Chunky"));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.items.iter().any(|r| r.contains("Chunky")), "{:?}", p.items);
+        assert!(p.busy.is_none());
+    });
+}
+
+fn more_hit(title: &str) -> anyhow::Result<crate::plugin_search::SearchResults> {
+    one_hit(title).map(|r| crate::plugin_search::SearchResults { more: true, ..r })
+}
+
+fn search_page(a: &App) -> usize {
+    let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+    let crate::app::PanelKind::PluginSearch { page, .. } = &p.kind else { panic!("ждали поиск") };
+    *page
+}
+
+#[tokio::test]
+async fn addon_search_ignores_more_while_busy() {
+    let srv = paper_search("more-busy");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search(search_req(&a), more_hit("First"));
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        key(&mut a, 'n');
+        assert_eq!(search_page(&a), 1);
+        a.apply_plugin_search(search_req(&a), one_hit("Second"));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.items.iter().any(|r| r.contains("Second")), "{:?}", p.items);
+        assert_eq!(search_page(&a), 1);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_failed_next_page_is_retried() {
+    let srv = paper_search("more-fail");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search(search_req(&a), more_hit("First"));
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        assert_eq!(search_page(&a), 1);
+        a.apply_plugin_search(search_req(&a), Err(anyhow::anyhow!("boom")));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.busy.is_none());
+        assert!(p.lines[0].text.contains("boom"), "{}", p.lines[0].text);
+        assert_eq!(search_page(&a), 0);
+    });
+}
+
 #[tokio::test]
 async fn addons_help_follows_sub_tab() {
     let tab_help =
@@ -796,5 +961,135 @@ async fn datapack_toast_survives_daemon_sent_notice() {
         assert_eq!(toast_text(&a), "sent: minecraft:reload");
         notice(&mut a, "отправлено: minecraft:reload", NoticeKind::Ok);
         assert_eq!(toast_text(&a), "sent: minecraft:reload", "своя отметка по-русски тоже глушится");
+    });
+}
+
+fn panel_of(a: &App) -> &crate::app::Panel {
+    let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель") };
+    p
+}
+
+#[tokio::test]
+async fn addon_search_drops_result_for_a_closed_window() {
+    let srv = paper_search("stale-window");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let old = search_req(&a);
+        press(&mut a, KeyCode::Esc);
+        assert!(a.popup.is_none());
+        // Другое окно (датапаки) не принимает ответ прежнего.
+        key(&mut a, ']');
+        key(&mut a, 'i');
+        assert_ne!(search_req(&a), old);
+        a.apply_plugin_search(old, one_hit("Plugin"));
+        let p = panel_of(&a);
+        assert!(p.items.is_empty(), "{:?}", p.items);
+        assert!(p.busy.is_some());
+    });
+}
+
+#[tokio::test]
+async fn addon_search_focus_follows_query() {
+    let srv = paper_search("focus");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search(search_req(&a), one_hit("Popular"));
+        let p = panel_of(&a);
+        assert!(p.input_focus, "пустой запрос оставляет фокус в строке ввода");
+        assert!(p.lines[0].text.contains("popular: 1 · type a name and press Enter"), "{}", p.lines[0].text);
+        key(&mut a, 'x');
+        press(&mut a, KeyCode::Enter);
+        a.apply_plugin_search(search_req(&a), one_hit("Xray"));
+        let p = panel_of(&a);
+        assert!(!p.input_focus, "найденное — фокус на списке");
+        assert!(p.lines[0].text.starts_with("found: 1"), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_failed_popular_offers_retry() {
+    let srv = paper_search("retry");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search(search_req(&a), Err(anyhow::anyhow!("boom")));
+        let p = panel_of(&a);
+        assert!(p.lines[0].text.ends_with("boom · Enter to retry"), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_dedupes_project_across_pages() {
+    use crate::plugin_search::Source;
+    let srv = paper_search("dedupe-pages");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let more =
+            hit_from(Source::Hangar, "ViaVersion").map(|r| crate::plugin_search::SearchResults { more: true, ..r });
+        a.apply_plugin_search(search_req(&a), more);
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        a.apply_plugin_search(search_req(&a), hit_from(Source::Modrinth, "ViaVersion"));
+        let p = panel_of(&a);
+        assert_eq!(p.items.iter().filter(|r| r.contains("ViaVersion")).count(), 1, "{:?}", p.items);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_enter_ignored_while_busy() {
+    let srv = paper_search("enter-busy");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search(search_req(&a), one_hit("First"));
+        press(&mut a, KeyCode::Down);
+        if let Some(Popup::Panel(p)) = &mut a.popup {
+            p.busy = Some("searching…".into());
+        }
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(panel_of(&a).busy.as_deref(), Some("searching…"));
+    });
+}
+
+#[tokio::test]
+async fn label_follows_contents_when_list_is_not_empty() {
+    let jar = |srv: &TempServer, dir: &str| {
+        std::fs::create_dir_all(srv.0.join(dir)).unwrap();
+        std::fs::write(srv.0.join(dir).join("a.jar"), b"").unwrap();
+    };
+    let both = TempServer::new("label-both");
+    std::fs::write(both.0.join("fabric-server-launch.jar"), b"").unwrap();
+    jar(&both, "plugins");
+    jar(&both, "mods");
+    let only_plugin = TempServer::new("label-plugin");
+    std::fs::write(only_plugin.0.join("fabric-server-launch.jar"), b"").unwrap();
+    jar(&only_plugin, "plugins");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![both.view(None)]);
+        let screen = addons_screen(&mut a);
+        assert!(screen.contains("Plugins and mods (2)"), "{screen}");
+        let mut a = app(vec![only_plugin.view(None)]);
+        let screen = addons_screen(&mut a);
+        assert!(screen.contains("Plugins (1)"), "{screen}");
+    });
+}
+
+#[tokio::test]
+async fn cached_vanilla_verdict_does_not_block_detected_core() {
+    let srv = paper_search("stale-vanilla");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        a.plugins.core = Some(crate::app::AddonsCore::Vanilla);
+        key(&mut a, 'i');
+        assert!(matches!(a.popup, Some(Popup::Panel(_))), "поиск открывается, ядро Paper определено заново");
     });
 }

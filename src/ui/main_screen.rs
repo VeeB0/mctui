@@ -3,8 +3,8 @@
 use super::layout;
 use super::theme;
 use crate::app::{
-    AddonsSub, App, BackupHealth, Focus, ServerUi, SubLevel, TABS, Tab, ToastKind, WorldRow, ago, human_bytes,
-    human_duration,
+    AddonsCore, AddonsSub, App, BackupHealth, Focus, ServerUi, SubLevel, TABS, Tab, ToastKind, WorldRow, ago,
+    human_bytes, human_duration, vanilla_addons_text,
 };
 use crate::config::Kind;
 use crate::plugins::PluginKind;
@@ -620,7 +620,9 @@ fn draw_addons(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     let n_plugins = p.items.iter().filter(|x| x.kind == PluginKind::Plugin).count();
     let n_mods = p.items.len() - n_plugins;
     let n = p.items.len();
+    // По содержимому, а пустой список — по ядру.
     let plugins_label = match (n_plugins, n_mods) {
+        (0, 0) if p.core == Some(AddonsCore::Mods) => tr!(format!("Моды ({n})"), format!("Mods ({n})")),
         (_, 0) => tr!(format!("Плагины ({n})"), format!("Plugins ({n})")),
         (0, _) => tr!(format!("Моды ({n})"), format!("Mods ({n})")),
         _ => tr!(format!("Плагины и моды ({n})"), format!("Plugins and mods ({n})")),
@@ -678,11 +680,12 @@ fn draw_plugins(app: &App, f: &mut Frame, inner: Rect, entries: bool) {
     };
     f.render_widget(Paragraph::new(head), top);
     if p.items.is_empty() {
-        f.render_widget(
-            Paragraph::new(tr!("В папках plugins/ и mods/ ничего нет", "Nothing in plugins/ or mods/"))
-                .fg(theme::MUTED),
-            list_area,
-        );
+        let empty = match p.core {
+            Some(AddonsCore::Vanilla) => vanilla_addons_text(),
+            Some(AddonsCore::Mods) => tr!("Модов нет · i — найти и установить", "No mods · i to find and install"),
+            _ => tr!("В папках plugins/ и mods/ ничего нет", "Nothing in plugins/ or mods/"),
+        };
+        f.render_widget(Paragraph::new(empty).fg(theme::MUTED), list_area);
         return;
     }
     let rows: Vec<Row> = p
