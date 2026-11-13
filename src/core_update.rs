@@ -245,15 +245,17 @@ fn identify(jar: &Path) -> Option<(Core, String, Option<String>)> {
 
 // ───────────────────────────── скрипт запуска ─────────────────────────────
 
+/// Слово строки скрипта: байтовые границы в строке (с кавычками) и значение (без них).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Tok {
-    start: usize,
-    end: usize,
-    value: String,
+pub(crate) struct Tok {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) value: String,
 }
 
 /// Слова строки с позициями (кавычки `"…"` и в sh `'…'`, экранирование `\` в sh).
-fn tokens(line: &str, bat: bool) -> Vec<Tok> {
+/// Общий разбор для `core_update` и `jvm`.
+pub(crate) fn tokens(line: &str, bat: bool) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut cur: Option<(usize, String)> = None;
     let mut quote: Option<char> = None;
@@ -302,25 +304,32 @@ fn tokens(line: &str, bat: bool) -> Vec<Tok> {
     out
 }
 
-fn is_java(word: &str) -> bool {
+pub(crate) fn is_java(word: &str) -> bool {
     let base = word.rsplit(['/', '\\']).next().unwrap_or(word).to_ascii_lowercase();
     matches!(base.as_str(), "java" | "java.exe" | "javaw" | "javaw.exe")
 }
 
-/// Где в скрипте jar и java: номер строки и слова.
+/// Где в скрипте jar и java: номер строки (с 0) и слова.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ScriptRef {
-    line: usize,
-    jar: Tok,
-    java: Option<Tok>,
+pub(crate) struct ScriptRef {
+    pub(crate) line: usize,
+    pub(crate) jar: Tok,
+    pub(crate) java: Option<Tok>,
+    /// Все слова строки запуска.
+    pub(crate) toks: Vec<Tok>,
+    /// Индекс `-jar` в [`ScriptRef::toks`] (jar — следующий).
+    pub(crate) jar_flag: usize,
+    /// Индекс java в [`ScriptRef::toks`].
+    pub(crate) java_idx: Option<usize>,
 }
 
-fn is_comment(line: &str, bat: bool) -> bool {
+pub(crate) fn is_comment(line: &str, bat: bool) -> bool {
     let t = line.trim_start().to_ascii_lowercase();
     t.starts_with('#') || (bat && (t.starts_with("rem ") || t == "rem" || t.starts_with("::")))
 }
 
-fn find_in_script(text: &str, bat: bool) -> Option<ScriptRef> {
+/// Первая строка `… java … -jar X.jar …` (комментарии пропускаются).
+pub(crate) fn find_in_script(text: &str, bat: bool) -> Option<ScriptRef> {
     for (n, line) in text.lines().enumerate() {
         if is_comment(line, bat) {
             continue;
@@ -328,10 +337,31 @@ fn find_in_script(text: &str, bat: bool) -> Option<ScriptRef> {
         let toks = tokens(line, bat);
         let Some(j) = toks.iter().position(|t| t.value == "-jar") else { continue };
         let Some(jar) = toks.get(j + 1).filter(|t| t.value.to_ascii_lowercase().ends_with(".jar")) else { continue };
-        let java = toks[..j].iter().find(|t| is_java(&t.value)).cloned();
-        return Some(ScriptRef { line: n, jar: jar.clone(), java });
+        let java_idx = toks[..j].iter().position(|t| is_java(&t.value));
+        let (jar, java) = (jar.clone(), java_idx.map(|i| toks[i].clone()));
+        return Some(ScriptRef { line: n, jar, java, toks, jar_flag: j, java_idx });
     }
     None
+}
+
+/// Текст с заменённой строкой `line` (с 0): остальные строки и окончание `\r\n` / `\n` этой строки — как были.
+/// `edit` получает строку без окончания.
+pub(crate) fn replace_line(text: &str, line: usize, edit: impl FnOnce(&mut String)) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut edit = Some(edit);
+    for (n, chunk) in text.split_inclusive('\n').enumerate() {
+        let Some(f) = edit.take_if(|_| n == line) else {
+            out.push_str(chunk);
+            continue;
+        };
+        let body = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        let mut l = body.to_string();
+        f(&mut l);
+        out.push_str(&l);
+        out.push_str(&chunk[body.len()..]);
+    }
+    out
 }
 
 /// Новый текст скрипта: jar → `new_jar`, java → `new_java` (если задана). Меняются только эти слова,
@@ -339,21 +369,13 @@ fn find_in_script(text: &str, bat: bool) -> Option<ScriptRef> {
 fn rewrite_script(text: &str, bat: bool, new_jar: &str, new_java: Option<&str>) -> Option<String> {
     let r = find_in_script(text, bat)?;
     let quote = |s: &str| if bat { create::bat_quote(&s.replace('/', "\\")) } else { create::sh_quote(s) };
-    let mut out = String::with_capacity(text.len() + 64);
-    for (n, chunk) in text.split_inclusive('\n').enumerate() {
-        if n != r.line {
-            out.push_str(chunk);
-            continue;
-        }
-        let mut line = chunk.to_string();
+    Some(replace_line(text, r.line, |line| {
         // Справа налево, чтобы позиции не сдвигались: jar стоит после java.
         line.replace_range(r.jar.start..r.jar.end, &quote(new_jar));
         if let (Some(java), Some(new)) = (&r.java, new_java) {
             line.replace_range(java.start..java.end, &quote(new));
         }
-        out.push_str(&line);
-    }
-    Some(out)
+    }))
 }
 
 fn script_names() -> impl Iterator<Item = &'static str> {
@@ -361,7 +383,7 @@ fn script_names() -> impl Iterator<Item = &'static str> {
     first.into_iter().chain(second)
 }
 
-fn is_bat(path: &Path) -> bool {
+pub(crate) fn is_bat(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
 }
 
@@ -375,6 +397,25 @@ fn pick_jar(dir: &Path) -> Option<PathBuf> {
         .collect();
     jars.sort();
     jars.into_iter().find(|p| identify(p).is_some())
+}
+
+/// Скрипт из команды запуска (`./start.sh`, `sh run.sh`, `cmd /C start.bat`), если она его запускает.
+pub(crate) fn command_script(command: &[String]) -> Option<&str> {
+    command.iter().map(|a| a.trim_start_matches("./")).find(|a| {
+        let l = a.to_ascii_lowercase();
+        [".sh", ".bat", ".cmd", ".command"].iter().any(|e| l.ends_with(e))
+    })
+}
+
+/// Существующие скрипты запуска по порядку: из команды, затем стандартные имена (сначала родные для системы).
+pub(crate) fn script_candidates(dir: &Path, command: &[String]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in command_script(command).map(|s| dir.join(s)).into_iter().chain(script_names().map(|s| dir.join(s))) {
+        if p.is_file() && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// Что установлено в `dir`: jar из скрипта запуска (start.sh / run.sh / start.bat / run.bat…), иначе
@@ -395,17 +436,7 @@ pub fn detect_with(dir: &Path, command: &[String]) -> Option<Installed> {
         return Some(Installed { core, mc_version, build, jar: path, script: None, java });
     }
     // 2. Скрипт: из команды или стандартные имена.
-    let from_command = command.iter().map(|a| a.trim_start_matches("./")).find(|a| {
-        let l = a.to_ascii_lowercase();
-        [".sh", ".bat", ".cmd", ".command"].iter().any(|e| l.ends_with(e))
-    });
-    let scripts: Vec<PathBuf> = from_command
-        .map(|s| dir.join(s))
-        .into_iter()
-        .chain(script_names().map(|s| dir.join(s)))
-        .filter(|p| p.is_file())
-        .collect();
-    for script in scripts {
+    for script in script_candidates(dir, command) {
         let Ok(text) = std::fs::read_to_string(&script) else { continue };
         let Some(r) = find_in_script(&text, is_bat(&script)) else { continue };
         let path = dir.join(&r.jar.value);
@@ -495,7 +526,8 @@ pub(crate) fn free_name(dir: &Path, base: &str) -> PathBuf {
     (1..).map(|i| dir.join(format!("{base}.{stamp}-{i}"))).find(|p| !p.exists()).expect("free name")
 }
 
-fn write_script(path: &Path, text: &str) -> Result<()> {
+/// Записывает скрипт через временный файл и переименование, сохраняя права (исполняемость).
+pub(crate) fn write_script(path: &Path, text: &str) -> Result<()> {
     let tmp = path.with_file_name(format!(".{}.mctui-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
     std::fs::write(&tmp, text)?;
     if let Ok(meta) = std::fs::metadata(path) {

@@ -16,6 +16,7 @@ mod daemon;
 mod event;
 mod i18n;
 mod input;
+mod jvm;
 mod log;
 mod network;
 mod playerstats;
