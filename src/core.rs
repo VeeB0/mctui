@@ -68,6 +68,7 @@ impl Manager {
         };
         for i in 0..m.servers.len() {
             m.load_history(i);
+            m.load_sessions(i);
             if m.servers[i].cfg.kind == Kind::Rcon {
                 m.connect_rcon(i);
             } else if m.servers[i].cfg.autostart {
@@ -510,6 +511,7 @@ impl Manager {
         self.servers.push(ServerState::new(cfg, id));
         let i = self.servers.len() - 1;
         self.load_history(i);
+        self.load_sessions(i);
         if is_rcon {
             self.connect_rcon(i);
         }
@@ -615,14 +617,23 @@ impl Manager {
         let s = &mut self.servers[idx];
         match stats::player_event(text) {
             Some(PlayerEvent::Joined(n)) => {
+                if let Some(log) = &mut s.sessions {
+                    log.record_join(&n, Local::now());
+                }
                 s.players.insert(n);
                 s.played_since_backup = true;
+                self.save_sessions(idx, false);
             }
             Some(PlayerEvent::Left(n)) => {
+                if let Some(log) = &mut s.sessions {
+                    log.record_leave(&n, Local::now());
+                }
                 s.players.remove(&n);
+                self.save_sessions(idx, false);
             }
             None => {}
         }
+        let s = &mut self.servers[idx];
         if let Some(until) = s.response_until {
             if Instant::now() < until {
                 s.response.push(text.clone());
@@ -641,6 +652,11 @@ impl Manager {
             return;
         }
         s.clear_runtime();
+        if let Some(log) = &mut s.sessions {
+            log.close_all(Local::now());
+        }
+        self.save_sessions(idx, false);
+        let s = &mut self.servers[idx];
         s.next_backup = None;
         s.next_restart = None;
         s.restart_warned.clear();
@@ -1099,7 +1115,33 @@ impl Manager {
         self.servers[i].history = v.into_iter().filter(|s| s.t >= since).collect();
     }
 
-    pub fn save_history(&self) {
+    fn load_sessions(&mut self, i: usize) {
+        if !self.servers[i].is_local() {
+            return;
+        }
+        let path = crate::playerstats::session_log_path(&self.config_path, &self.servers[i].cfg.name);
+        let mut log = crate::playerstats::SessionLog::load(path);
+        log.recover();
+        self.servers[i].sessions = Some(log);
+    }
+
+    fn save_sessions(&mut self, i: usize, heartbeat: bool) {
+        if let Some(log) = &mut self.servers[i].sessions {
+            if heartbeat {
+                log.heartbeat(Local::now());
+            }
+            if let Err(e) = log.save() {
+                eprintln!("mctui: sessions: {e:#}");
+            }
+        }
+    }
+
+    pub fn save_history(&mut self) {
+        for i in 0..self.servers.len() {
+            if self.servers[i].proc.is_some() {
+                self.save_sessions(i, true);
+            }
+        }
         for i in 0..self.servers.len() {
             let path = self.history_path(i);
             if self.servers[i].history.is_empty() {

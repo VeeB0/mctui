@@ -153,8 +153,8 @@ pub fn draw(app: &App, f: &mut Frame) {
         )
     } else {
         tr!(
-            " Esc/L назад · ↑↓ PgUp PgDn прокрутка · g/G начало/конец · ←→ по горизонтали · / поиск · n/N выше/ниже · f фильтр · c чат · Tab источники · r обновить",
-            " Esc/L back · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · n/N prev/next · f filter · c chat · Tab sources · r reload"
+            " Esc/L назад · ↑↓ PgUp PgDn прокрутка · g/G начало/конец · ←→ по горизонтали · / поиск · F по всем логам · n/N выше/ниже · f фильтр · c чат · Tab источники · r обновить",
+            " Esc/L back · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · F all logs · n/N prev/next · f filter · c chat · Tab sources · r reload"
         )
     };
     f.render_widget(Paragraph::new(hints).fg(theme::TEXT), l.hints);

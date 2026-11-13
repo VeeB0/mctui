@@ -51,6 +51,13 @@ impl PlayerStats {
 }
 
 /// Игроки мира `level_name` по наигранному времени (больше — выше).
+/// Где служба хранит журнал сессий сервера (окно читает его оттуда же).
+pub fn session_log_path(config_path: &Path, server_name: &str) -> PathBuf {
+    crate::config::state_dir(config_path)
+        .join("sessions")
+        .join(format!("{}.json", crate::backup::file_prefix(server_name)))
+}
+
 pub fn load(dir: &Path, level_name: &str) -> Vec<PlayerStats> {
     let level = dir.join(level_name);
     let names = usercache(dir);

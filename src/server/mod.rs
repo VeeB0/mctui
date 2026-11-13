@@ -106,6 +106,8 @@ pub struct ServerState {
     pub restoring: bool,
     pub crash_gave_up: bool,
     pub alerts: crate::alerts::Tracker,
+    /// Журнал входов/выходов игроков (только локальные серверы).
+    pub sessions: Option<crate::playerstats::SessionLog>,
 }
 
 impl ServerState {
@@ -155,6 +157,7 @@ impl ServerState {
             restoring: false,
             crash_gave_up: false,
             alerts: Default::default(),
+            sessions: None,
         };
         s.reload_props();
         s.reload_ops();

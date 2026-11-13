@@ -15,6 +15,7 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 pub fn draw(app: &App, f: &mut Frame) {
     let Some(p) = &app.popup else { return };
     match p {
+        Popup::Panel(panel) => super::panel::draw(panel, f),
         Popup::Confirm { title, text, .. } => {
             let r = centered(f.area(), 64, 8);
             f.render_widget(Clear, r);

@@ -28,6 +28,9 @@ use tokio::sync::mpsc;
 
 pub use crate::core::human_bytes;
 
+mod panel;
+pub use panel::{Panel, Tone};
+
 const TOAST_FOR: Duration = Duration::from_secs(5);
 const HISTORY_CAP: usize = 24 * 60;
 
@@ -88,6 +91,7 @@ pub enum Action {
     RemoveServer(usize),
     AccessRemove { list: List, name: String },
     ApplyUpdates(Vec<PathBuf>),
+    InstallPlugin(Box<crate::plugin_search::InstallPlan>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +128,7 @@ pub enum EditTarget {
     Opt(Opt),
     AccessAdd(List),
     Chat,
+    LogSearch,
 }
 
 pub enum Popup {
@@ -141,6 +146,7 @@ pub enum Popup {
     Quit {
         running: usize,
     },
+    Panel(Box<Panel>),
 }
 
 #[derive(Debug, Clone)]
@@ -589,6 +595,7 @@ impl App {
             Action::RemoveServer(id) => self.send(Request::RemoveServer { id }),
             Action::AccessRemove { list, name } => self.access_remove(list, &name),
             Action::ApplyUpdates(paths) => self.apply_updates(paths),
+            Action::InstallPlugin(plan) => self.install_plugin(*plan),
         }
     }
 
@@ -1537,6 +1544,7 @@ impl App {
                 KeyCode::Char(c) if matches!(latin(c), 'n' | 'q') => {}
                 _ => self.popup = Some(Popup::Quit { running }),
             },
+            Popup::Panel(p) => self.panel_key(p, k),
             Popup::Edit { title, mut input, target } => match k.code {
                 KeyCode::Enter => {
                     let v = input.value.clone();
@@ -1544,6 +1552,11 @@ impl App {
                         EditTarget::Property(key) => self.set_property(&key, v.trim()),
                         EditTarget::Opt(o) => self.apply_opt(o, &v),
                         EditTarget::AccessAdd(list) => self.access_add(list, &v),
+                        EditTarget::LogSearch => {
+                            if !v.trim().is_empty() {
+                                self.run_log_search(v.trim().to_string());
+                            }
+                        }
                         EditTarget::Chat => {
                             if !v.trim().is_empty() {
                                 let id = self.sel().id;
@@ -1616,6 +1629,7 @@ impl App {
                         return;
                     }
                     'q' => return self.request_quit(),
+                    'f' => return self.open_network(),
                     'a' if self.focus == Focus::Sidebar => return self.open_setup(),
                     '-' | 'x' if self.focus == Focus::Sidebar => return self.ask_remove_server(),
                     _ => {}
@@ -1741,6 +1755,9 @@ impl App {
         let id = self.sel().id;
         match self.tab {
             Tab::Players => {
+                if c == 's' {
+                    return self.open_player_stats();
+                }
                 let Some(p) = self.selected_player() else {
                     return;
                 };
@@ -1874,6 +1891,7 @@ impl App {
                 }
             }
             Tab::Plugins => match c {
+                'i' | 'n' => self.open_plugin_search(),
                 ' ' => self.toggle_plugin(),
                 'c' => self.check_plugin_updates(),
                 'U' => self.ask_apply_updates(true),
@@ -1944,6 +1962,10 @@ impl App {
                     let latest = dir.join("latest.log");
                     if latest.is_file() {
                         v.push(("latest.log".into(), LogSource::File(latest)));
+                    }
+                    for c in crate::crash::list_crash_reports(s.cfg.dir()).into_iter().take(20) {
+                        let label = format!("⚠ {} · {}", c.time.format("%d.%m %H:%M"), c.summary());
+                        v.push((label, LogSource::File(c.path)));
                     }
                     let mut archives: Vec<PathBuf> = std::fs::read_dir(&dir)
                         .map(|rd| {
@@ -2102,6 +2124,14 @@ impl App {
                 'n' => self.jump_to_match(-1),
                 'N' => self.jump_to_match(1),
                 'm' | 'i' => self.open_chat_input(),
+                'F' => {
+                    self.popup = Some(Popup::Edit {
+                        title: tr!("Поиск по всем логам и отчётам о падениях", "Search all logs and crash reports")
+                            .into(),
+                        input: TextInput::with(self.logs.search.as_deref().unwrap_or("")),
+                        target: EditTarget::LogSearch,
+                    })
+                }
                 'c' => {
                     let i = self.logs.sources.iter().position(|(_, s)| matches!(s, LogSource::Chat));
                     if let Some(i) = i {

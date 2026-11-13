@@ -1,6 +1,7 @@
 pub mod layout;
 mod logs;
 mod main_screen;
+mod panel;
 mod popup;
 mod setup;
 pub mod theme;

@@ -902,16 +902,16 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "Enter send · Tab complete · ↑↓ history · Esc leave"
         ),
         (Focus::Content, Tab::Players) => tr!(
-            "↑↓ выбор · k кик · b бан · o/d оп/деоп · w в белый список",
-            "↑↓ select · k kick · b ban · o/d op/deop · w whitelist"
+            "↑↓ выбор · k кик · b бан · o/d оп/деоп · w в белый список · s статистика",
+            "↑↓ select · k kick · b ban · o/d op/deop · w whitelist · s statistics"
         ),
         (Focus::Content, Tab::Access) => tr!(
             "←→ список · a добавить · d удалить · w вкл/выкл белый список · u обновить",
             "←→ list · a add · d remove · w whitelist on/off · u reload"
         ),
         (Focus::Content, Tab::Plugins) => tr!(
-            "↑↓ выбор · Пробел вкл/выкл · c проверить обновления · Enter/U обновить · u обновить список",
-            "↑↓ select · Space on/off · c check updates · Enter/U update · u rescan"
+            "↑↓ выбор · i найти и установить · Пробел вкл/выкл · c обновления · Enter/U обновить · u перечитать",
+            "↑↓ select · i find & install · Space on/off · c updates · Enter/U update · u rescan"
         ),
         (Focus::Content, Tab::Settings) => tr!(
             "↑↓ выбор · Enter изменить · Пробел вкл/выкл · r включить RCON · u перечитать",
@@ -921,9 +921,13 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "↑↓ выбор · n новый · r восстановить · d удалить · u обновить",
             "↑↓ select · n new · r restore · d delete · u refresh"
         ),
+        (Focus::Content, Tab::Status) => tr!(
+            "f как друзьям зайти · 1-6 вкладки · Enter ввод команды",
+            "f how friends can join · 1-6 tabs · Enter type a command"
+        ),
         _ => tr!(
-            "↑↓ сервер · a добавить · Del убрать · Tab фокус · 1-6 вкладки",
-            "↑↓ server · a add · Del remove · Tab focus · 1-6 tabs"
+            "↑↓ сервер · a добавить · Del убрать · Tab фокус · 1-6 вкладки · f как друзьям зайти",
+            "↑↓ server · a add · Del remove · Tab focus · 1-6 tabs · f how friends join"
         ),
     };
     let line = Line::from(vec![
