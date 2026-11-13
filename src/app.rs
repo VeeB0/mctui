@@ -160,6 +160,7 @@ pub struct App {
     pub config_path: PathBuf,
     /// Новая версия на GitHub, если есть.
     pub update_available: Option<String>,
+    pub language: Option<String>,
     next_id: usize,
     rcon_seq: u64,
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -182,10 +183,12 @@ pub fn latin(c: char) -> char {
 
 impl App {
     pub fn new(cfg: crate::config::Config, config_path: PathBuf, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
+        let language = cfg.language.clone();
         let servers: Vec<ServerState> =
             cfg.servers.into_iter().enumerate().map(|(i, c)| ServerState::new(c, i + 1)).collect();
         let first_run = servers.is_empty();
         let mut app = Self {
+            language,
             next_id: servers.len() + 1,
             rcon_seq: 0,
             setup: first_run.then(|| Setup::new(true)),
@@ -616,7 +619,10 @@ impl App {
     // ───────────────────────────── список серверов ─────────────────────────────
 
     fn save_config(&mut self) {
-        let cfg = crate::config::Config { servers: self.servers.iter().map(|s| s.cfg.clone()).collect() };
+        let cfg = crate::config::Config {
+            language: self.language.clone(),
+            servers: self.servers.iter().map(|s| s.cfg.clone()).collect(),
+        };
         if let Err(e) = cfg.save(&self.config_path) {
             self.toast(format!("не удалось сохранить {}: {e:#}", self.config_path.display()), ToastKind::Error);
         }

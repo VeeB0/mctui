@@ -2,6 +2,8 @@ mod app;
 mod backup;
 mod config;
 mod event;
+#[allow(dead_code)] // используется по мере перевода интерфейса
+mod i18n;
 mod input;
 mod log;
 mod properties;
@@ -83,6 +85,7 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
+    i18n::init(cfg.language.as_deref());
 
     let mut terminal = ratatui::init();
     let hook = std::panic::take_hook();

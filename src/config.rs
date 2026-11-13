@@ -17,6 +17,9 @@ pub enum Kind {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
+    /// Язык интерфейса: "ru", "en" или не задан — как в системе.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     #[serde(rename = "server", default)]
     pub servers: Vec<ServerConfig>,
 }
@@ -412,6 +415,7 @@ mod tests {
         let d = tmp("save");
         let path = d.join("sub/servers.toml");
         let cfg = Config {
+            language: None,
             servers: vec![
                 ServerConfig::new_local("Мир", d.clone(), vec!["./start.sh".into()], vec!["world".into()]),
                 ServerConfig::new_rcon("R", "1.2.3.4", 25575, "pw"),
