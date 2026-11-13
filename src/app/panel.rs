@@ -274,7 +274,7 @@ impl App {
             p.items.clear();
             p.sel = 0;
         } else {
-            *offset += ps::PAGE_SIZE;
+            *offset += 1; // номер страницы
         }
         let (q, t, off) = (query.clone(), target.clone(), *offset);
         // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
