@@ -253,7 +253,7 @@ impl App {
                 Tab::Access => {
                     // PgUp/PgDn/Home/End и колесо мыши сразу ведут в записи.
                     if !self.access.entries.is_empty() {
-                        self.access.level = AccessLevel::Entries;
+                        self.access.level = SubLevel::Entries;
                     }
                     self.access.sel = step(self.access.sel, self.access.entries.len())
                 }
@@ -450,8 +450,8 @@ impl App {
                         });
                     }
                     // Выделение записи видно только на уровне записей — не удаляем то, чего не видно.
-                    'd' if self.access.level != AccessLevel::Entries && !self.access.entries.is_empty() => {
-                        self.access.level = AccessLevel::Entries;
+                    'd' if self.access.level != SubLevel::Entries && !self.access.entries.is_empty() => {
+                        self.access.level = SubLevel::Entries;
                         self.toast(
                             tr!("Выберите запись ↑↓ и нажмите d", "Pick an entry with ↑↓ and press d"),
                             ToastKind::Info,

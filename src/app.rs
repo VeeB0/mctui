@@ -40,6 +40,7 @@ mod panel;
 mod plugins_tab;
 mod settings_tab;
 mod setup_flow;
+mod sub_tabs;
 mod tools;
 mod world_tab;
 pub use backup_health::{BackupHealth, ago};
@@ -248,7 +249,7 @@ impl ServerUi {
 
 /// Где стрелки на вкладке «Доступ»: ↓ спускает уровнем ниже, ↑ поднимает.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AccessLevel {
+pub enum SubLevel {
     /// ←→ листают вкладки окна, как на остальных вкладках.
     #[default]
     Tabs,
@@ -260,7 +261,7 @@ pub enum AccessLevel {
 
 pub struct AccessView {
     pub list: List,
-    pub level: AccessLevel,
+    pub level: SubLevel,
     pub entries: Vec<access::Entry>,
     pub sel: usize,
     pub error: Option<String>,
@@ -381,7 +382,7 @@ impl App {
             backups_at: None,
             access: AccessView {
                 list: List::Whitelist,
-                level: AccessLevel::Tabs,
+                level: SubLevel::Tabs,
                 entries: vec![],
                 sel: 0,
                 error: None,
@@ -798,7 +799,7 @@ impl App {
         self.settings_sel = 0;
         self.backups_sel = 0;
         self.access.sel = 0;
-        self.access.level = AccessLevel::Tabs;
+        self.access.level = SubLevel::Tabs;
         self.plugins.sel = 0;
         self.world.sel = 0;
         self.completion = None;
@@ -828,7 +829,7 @@ impl App {
 
     fn set_tab(&mut self, t: Tab) {
         self.tab = t;
-        self.access.level = AccessLevel::Tabs;
+        self.access.level = SubLevel::Tabs;
         self.on_tab_shown(false);
     }
 }

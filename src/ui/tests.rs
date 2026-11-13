@@ -287,20 +287,20 @@ async fn arrows_switch_tabs_on_access_tab() {
 #[tokio::test]
 async fn access_tab_down_enters_lists_up_leaves() {
     use crate::access::{Entry, List};
-    use crate::app::AccessLevel;
+    use crate::app::SubLevel;
     let arrow = |a: &mut App, code| a.on_key(KeyEvent::new(code, KeyModifiers::NONE));
     let mut a = app(vec![local_running()]);
     key(&mut a, '3');
-    assert_eq!(a.access.level, AccessLevel::Tabs);
+    assert_eq!(a.access.level, SubLevel::Tabs);
 
     arrow(&mut a, KeyCode::Down);
-    assert_eq!(a.access.level, AccessLevel::Lists, "↓ спускается к спискам");
+    assert_eq!(a.access.level, SubLevel::Lists, "↓ спускается к спискам");
     arrow(&mut a, KeyCode::Right);
     assert_eq!((a.tab, a.access.list), (Tab::Access, List::Ops), "в списках → листает списки, а не вкладки");
     arrow(&mut a, KeyCode::Left);
     assert_eq!((a.tab, a.access.list), (Tab::Access, List::Whitelist));
     arrow(&mut a, KeyCode::Down);
-    assert_eq!(a.access.level, AccessLevel::Lists, "в пустой список не спуститься");
+    assert_eq!(a.access.level, SubLevel::Lists, "в пустой список не спуститься");
 
     let entry = |name: &str| Entry {
         name: name.into(),
@@ -313,16 +313,16 @@ async fn access_tab_down_enters_lists_up_leaves() {
     };
     a.access.entries = vec![entry("Alex"), entry("Steve")];
     arrow(&mut a, KeyCode::Down);
-    assert_eq!((a.access.level, a.access.sel), (AccessLevel::Entries, 0), "↓ спускается в записи");
+    assert_eq!((a.access.level, a.access.sel), (SubLevel::Entries, 0), "↓ спускается в записи");
     arrow(&mut a, KeyCode::Down);
     assert_eq!(a.access.sel, 1);
     arrow(&mut a, KeyCode::Up);
     arrow(&mut a, KeyCode::Up);
-    assert_eq!(a.access.level, AccessLevel::Lists, "↑ с первой записи — обратно к спискам");
+    assert_eq!(a.access.level, SubLevel::Lists, "↑ с первой записи — обратно к спискам");
     arrow(&mut a, KeyCode::Up);
-    assert_eq!(a.access.level, AccessLevel::Tabs, "↑ из списков — обратно к вкладкам");
+    assert_eq!(a.access.level, SubLevel::Tabs, "↑ из списков — обратно к вкладкам");
     arrow(&mut a, KeyCode::Right);
     assert_eq!(a.tab, Tab::Plugins, "наверху → снова листает вкладки окна");
     key(&mut a, '3');
-    assert_eq!(a.access.level, AccessLevel::Tabs, "вернулись на «Доступ» — снова наверху");
+    assert_eq!(a.access.level, SubLevel::Tabs, "вернулись на «Доступ» — снова наверху");
 }
