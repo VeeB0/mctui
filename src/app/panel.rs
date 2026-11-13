@@ -479,7 +479,7 @@ impl App {
             self.datapacks.busy = busy;
             let key = (self.sel().id, dir.clone());
             return self.spawn_task(
-                move || ps::install(&plan, &dir),
+                move || super::datapacks_tab::run_guarded(|| ps::install(&plan, &dir)).and_then(|r| r),
                 |app, res| {
                     app.datapacks.busy = None;
                     match res {

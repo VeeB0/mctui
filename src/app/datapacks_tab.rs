@@ -10,6 +10,19 @@ fn reload_lag() -> &'static str {
     tr!("Перезагрузка даёт короткую заминку.", "A reload causes a brief lag.")
 }
 
+/// Выполняет работу фонового задания датапаков, превращая панику в ошибку: иначе применяющая часть
+/// не запустится, и `datapacks.busy` останется взведённым до перезапуска.
+pub(super) fn run_guarded<T>(work: impl FnOnce() -> T) -> anyhow::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).map_err(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".into());
+        anyhow::anyhow!(tr!(format!("внутренняя ошибка: {msg}"), format!("internal error: {msg}")))
+    })
+}
+
 impl App {
     /// (id сервера, папка мира) выбранного сервера.
     fn datapacks_key(&self) -> (usize, PathBuf) {
@@ -351,15 +364,18 @@ impl App {
         self.datapacks.busy = Some(tr!("скачивание обновлений…", "downloading updates…").into());
         self.spawn_task(
             move || {
-                let mut done = vec![];
-                let mut errs = vec![];
-                for (d, u) in &jobs {
-                    match datapacks::apply_update(d, u, &level) {
-                        Ok(p) => done.push((p, u.version.clone())),
-                        Err(e) => errs.push(format!("{}: {e:#}", d.name)),
+                run_guarded(|| {
+                    let mut done = vec![];
+                    let mut errs = vec![];
+                    for (d, u) in &jobs {
+                        match datapacks::apply_update(d, u, &level) {
+                            Ok(p) => done.push((p, u.version.clone())),
+                            Err(e) => errs.push(format!("{}: {e:#}", d.name)),
+                        }
                     }
-                }
-                (done, errs)
+                    (done, errs)
+                })
+                .unwrap_or_else(|e| (vec![], vec![format!("{e:#}")]))
             },
             move |app, (done, errs)| {
                 app.datapacks.busy = None;
@@ -390,6 +406,17 @@ mod tests {
     use super::*;
     use crate::client::Client;
     use crate::i18n::{Lang, with_lang};
+
+    #[test]
+    fn run_guarded_turns_a_panic_into_an_error() {
+        assert_eq!(run_guarded(|| 7).unwrap(), 7);
+        with_lang(Lang::En, || {
+            let e = run_guarded(|| -> u8 { panic!("boom") }).unwrap_err();
+            assert_eq!(format!("{e:#}"), "internal error: boom");
+            let e = run_guarded(|| -> u8 { panic!("{}", String::from("fmt")) }).unwrap_err();
+            assert!(format!("{e:#}").ends_with("fmt"), "{e:#}");
+        });
+    }
 
     #[tokio::test]
     async fn finish_datapack_job_keeps_an_open_window() {
