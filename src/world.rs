@@ -370,15 +370,21 @@ pub fn reset_dimension(dir: &Path, level_name: &str, dim: Dimension) -> Result<P
             std::fs::rename(src, &dst).with_context(|| format!("{} → {}", src.display(), dst.display()))
         };
         if let Err(e) = step() {
-            // Полусброшенное измерение хуже несброшенного: возвращаем уже перенесённое на место.
-            let back = moved.iter().rev().all(|(s, d)| std::fs::rename(d, s).is_ok());
-            if back {
-                let _ = std::fs::remove_dir_all(&stash); // там остались только пустые папки
+            // Полусброшенное измерение хуже несброшенного: возвращаем на место всё, что успели перенести.
+            let stuck: Vec<String> = moved
+                .iter()
+                .rev()
+                .filter(|(s, d)| std::fs::rename(d, s).is_err())
+                .map(|(s, _)| s.display().to_string())
+                .collect();
+            if stuck.is_empty() {
+                remove_empty_dirs(&stash); // там остались только пустые папки
                 return Err(e);
             }
+            let stuck = stuck.join(", ");
             return Err(e.context(crate::tr!(
-                format!("сброс прерван; часть ландшафта осталась в {}", stash.display()),
-                format!("reset interrupted; part of the terrain is left in {}", stash.display())
+                format!("сброс прерван; не удалось вернуть из {}: {stuck}", stash.display()),
+                format!("reset interrupted; could not move back from {}: {stuck}", stash.display())
             )));
         }
         moved.push((src, dst));
@@ -388,6 +394,18 @@ pub fn reset_dimension(dir: &Path, level_name: &str, dim: Dimension) -> Result<P
     }
     rotate_stash(&stash_root, &stash);
     Ok(stash)
+}
+
+/// Удаляет `p` и вложенные папки, только если в них нет ни одного файла (данные не трогает никогда).
+fn remove_empty_dirs(p: &Path) {
+    if let Ok(rd) = std::fs::read_dir(p) {
+        for e in rd.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                remove_empty_dirs(&e.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(p);
 }
 
 /// В папке есть что-то кроме файлов настроек (после сброса там остаётся только `paper-world.yml`).
@@ -1009,6 +1027,12 @@ mod tests {
         // Первый перенос (26.x) проходит, второй (из <level>, только для чтения) — нет.
         let level = d.join("world");
         std::fs::set_permissions(&level, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(level.join("probe"), b"").is_ok() {
+            // root (например, Docker CI) пишет и в папку только для чтения — сбой не воспроизвести
+            std::fs::set_permissions(&level, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(&d);
+            return;
+        }
         let res = reset_dimension(&d, "world", Dimension::Overworld);
         std::fs::set_permissions(&level, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(res.is_err());

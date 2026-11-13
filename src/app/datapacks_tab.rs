@@ -27,8 +27,8 @@ pub fn guarded_panic(info: &std::panic::PanicHookInfo) -> bool {
     true
 }
 
-/// Выполняет работу фонового задания датапаков, превращая панику в ошибку: иначе применяющая часть
-/// не запустится, и `datapacks.busy` останется взведённым до перезапуска.
+/// Выполняет работу фонового задания (датапаки, сброс мира), превращая панику в ошибку: иначе применяющая часть
+/// не запустится, и флаг «занято» (`datapacks.busy`, `world.resetting`) останется взведённым до перезапуска.
 pub(super) fn run_guarded<T>(work: impl FnOnce() -> T) -> anyhow::Result<T> {
     let outer = GUARDED.with(|g| g.replace(true));
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));

@@ -218,14 +218,17 @@ impl App {
         self.world.resetting = true;
         self.spawn_task(
             move || {
-                let now = world::current_level_name(&dir);
-                if now != level {
-                    anyhow::bail!(tr!(
-                        format!("основной мир сменился («{level}» → «{now}») — ничего не тронуто, повторите"),
-                        format!("the main world changed (“{level}” → “{now}”) — nothing touched, try again")
-                    ));
-                }
-                world::reset_dimension(&dir, &level, dim)
+                super::datapacks_tab::run_guarded(|| {
+                    let now = world::current_level_name(&dir);
+                    if now != level {
+                        anyhow::bail!(tr!(
+                            format!("основной мир сменился («{level}» → «{now}») — ничего не тронуто, повторите"),
+                            format!("the main world changed (“{level}” → “{now}”) — nothing touched, try again")
+                        ));
+                    }
+                    world::reset_dimension(&dir, &level, dim)
+                })
+                .and_then(|r| r)
             },
             |app, res| {
                 app.world.resetting = false;
