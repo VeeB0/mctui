@@ -381,11 +381,8 @@ impl App {
                     let first_load = popular && *cur_page == 0;
                     // Следующая «n» повторит ту же страницу, а не перескочит через неё.
                     *cur_page = cur_page.saturating_sub(1);
-                    let retry = if first_load {
-                        tr!(" · Enter — повторить", " · Enter to retry")
-                    } else {
-                        ""
-                    };
+                    let retry =
+                        if first_load { tr!(" · Enter — повторить", " · Enter to retry") } else { "" };
                     p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}{retry}"))];
                 }
             }

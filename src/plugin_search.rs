@@ -716,8 +716,12 @@ fn file_ext(kind: PluginKind) -> &'static str {
 
 fn mr_file(v: &MrVersion, kind: PluginKind) -> Option<&plugins::MrFile> {
     v.primary_file().filter(|f| {
-        f.filename.to_ascii_lowercase().ends_with(file_ext(kind))
-            && (kind != PluginKind::Datapack || plugins::safe_file_name(&f.filename, ".zip").is_ok())
+        if kind == PluginKind::Datapack {
+            // Только `.zip` в нижнем регистре: `X.ZIP` Minecraft и сканер датапаков не увидят.
+            f.filename.ends_with(file_ext(kind)) && plugins::safe_file_name(&f.filename, ".zip").is_ok()
+        } else {
+            f.filename.to_ascii_lowercase().ends_with(file_ext(kind))
+        }
     })
 }
 
@@ -1789,6 +1793,20 @@ mod tests {
         assert_eq!(plan.kind, PluginKind::Datapack);
         let url = http.log.borrow()[0].clone();
         assert!(url.contains(&enc(r#"["datapack"]"#)), "{url}");
+    }
+
+    #[test]
+    fn datapack_resolve_ignores_uppercase_zip() {
+        // Minecraft и сканер pechka видят только `.zip` в нижнем регистре: `X.ZIP` стал бы невидимым паком.
+        let t = Target::new(Platform::Datapack, Some("26.3"));
+        let only_upper = format!("[{}]", zip_version("a", "X.ZIP", &["datapack"]));
+        let http = FakeHttp::default().route("/project/DP/version", &only_upper);
+        assert!(resolve_with(&http, &datapack_hit(), &t, &InstalledIndex::default()).unwrap().is_none());
+        let both =
+            format!("[{},{}]", zip_version("a", "X.ZIP", &["datapack"]), zip_version("b", "x.zip", &["datapack"]));
+        let http = FakeHttp::default().route("/project/DP/version", &both);
+        let plan = resolve_with(&http, &datapack_hit(), &t, &InstalledIndex::default()).unwrap().unwrap();
+        assert_eq!(plan.main.file_name, "x.zip");
     }
 
     fn datapack_plan(src: &Path) -> InstallPlan {
