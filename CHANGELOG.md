@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-13
+
 ### Добавлено
 - **Датапаки.** Вкладка 4 теперь называется **«Дополнения»** (клавиша та же — `4`) и делится на две
   подвкладки: «Плагины» (всё как раньше) и «Датапаки» — датапаки текущего мира. Стрелка ↓ спускает
@@ -224,7 +226,8 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/VeeB0/pechka/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/VeeB0/pechka/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/VeeB0/pechka/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/VeeB0/pechka/compare/v0.4.0...v0.5.0
