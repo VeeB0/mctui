@@ -5,6 +5,7 @@ mod client;
 mod complete;
 mod config;
 mod core;
+mod core_update;
 mod create;
 mod daemon;
 mod event;
@@ -19,6 +20,7 @@ mod service;
 mod setup;
 mod ui;
 mod update;
+mod velocity;
 
 use anyhow::Result;
 use crossterm::event::{

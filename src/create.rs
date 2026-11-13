@@ -1,5 +1,5 @@
 //! Создание нового сервера Minecraft с нуля: ядро (Paper / Purpur / Fabric / Vanilla), Java,
-//! eula.txt, server.properties и скрипт запуска.
+//! eula.txt, server.properties и скрипт запуска. Также прокси Velocity (velocity.toml вместо eula/properties).
 //!
 //! Блокирующий API — вызывающая сторона запускает [`create`] внутри `tokio::task::spawn_blocking`.
 //! Сеть — через системный `curl`, как в `update.rs`.
@@ -7,6 +7,7 @@
 //! Источники (проверены вживую в ноябре 2026):
 //! - Paper: PaperMC Fill API v3 — `fill.papermc.io/v3/projects/paper/versions` (новые сверху, с минимальной
 //!   Java) и `…/versions/{v}/builds?channel=STABLE` (sha256 + размер);
+//! - Velocity: тот же Fill API, проект `velocity` (минимальная Java — оттуда же; 4.x требует Java 25);
 //! - Purpur: `api.purpurmc.org/v2/purpur` и `…/{v}/latest` (md5), файл — `…/{v}/{build}/download`;
 //! - Fabric: `meta.fabricmc.net/v2/versions/{game,installer,loader/{v}}`, серверный лаунчер —
 //!   `…/loader/{v}/{loader}/{installer}/server/jar` (контрольной суммы API не даёт);
@@ -35,10 +36,21 @@ pub enum Core {
     Purpur,
     Fabric,
     Vanilla,
+    /// Прокси Velocity (сеть из нескольких серверов). Не игровой сервер: без мира, EULA и server.properties.
+    Velocity,
 }
 
 impl Core {
+    /// Игровые ядра (форма «Создать новый» до появления прокси в интерфейсе).
     pub const ALL: [Core; 4] = [Core::Paper, Core::Purpur, Core::Fabric, Core::Vanilla];
+    /// Игровые ядра и прокси — для формы, которая умеет создавать и Velocity.
+    #[allow(dead_code)] // used by UI integration
+    pub const WITH_PROXY: [Core; 5] = [Core::Paper, Core::Purpur, Core::Fabric, Core::Vanilla, Core::Velocity];
+
+    /// Прокси (Velocity): нет мира, EULA, server.properties; порт — в velocity.toml.
+    pub fn is_proxy(self) -> bool {
+        self == Core::Velocity
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -46,6 +58,7 @@ impl Core {
             Core::Purpur => "Purpur",
             Core::Fabric => "Fabric",
             Core::Vanilla => "Vanilla",
+            Core::Velocity => "Velocity",
         }
     }
 
@@ -59,15 +72,21 @@ impl Core {
             Core::Vanilla => {
                 tr!("Чистый сервер Mojang без плагинов и модов", "Plain Mojang server, no plugins or mods")
             }
+            Core::Velocity => tr!(
+                "Прокси: объединяет несколько серверов в одну сеть",
+                "Proxy: joins several servers into one network"
+            ),
         }
         .to_string()
     }
 
     /// Аргумент «без окна» для этого ядра (Fabric-лаунчер и старые ванильные сборки понимают только `nogui`).
-    fn nogui(self) -> &'static str {
+    /// У Velocity окна нет — пустая строка.
+    pub(crate) fn nogui(self) -> &'static str {
         match self {
             Core::Paper | Core::Purpur => "--nogui",
             Core::Fabric | Core::Vanilla => "nogui",
+            Core::Velocity => "",
         }
     }
 }
@@ -104,6 +123,9 @@ const MIN_MEMORY_MB: u32 = 512;
 // ───────────────────────────── сеть ─────────────────────────────
 
 const PAPER_API: &str = "https://fill.papermc.io/v3/projects/paper";
+const VELOCITY_API: &str = "https://fill.papermc.io/v3/projects/velocity";
+/// Java для Velocity, если Fill API не сообщил минимум (Velocity 3.4 — 17, 3.5 — 21, 4.x — 25).
+const VELOCITY_DEFAULT_JAVA: u32 = 21;
 const PURPUR_API: &str = "https://api.purpurmc.org/v2/purpur";
 const FABRIC_API: &str = "https://meta.fabricmc.net/v2";
 const MOJANG_MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -125,7 +147,7 @@ fn curl_failed(url: &str, stderr: &[u8]) -> anyhow::Error {
     anyhow::anyhow!(tr!(format!("не удалось получить {url}: {err}"), format!("failed to fetch {url}: {err}")))
 }
 
-fn get_bytes(url: &str) -> Result<Vec<u8>> {
+pub(crate) fn get_bytes(url: &str) -> Result<Vec<u8>> {
     let out = curl()
         .args(["--max-time", "60"])
         .arg(url)
@@ -138,12 +160,12 @@ fn get_bytes(url: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-fn get_json<T: DeserializeOwned>(url: &str) -> Result<T> {
+pub(crate) fn get_json<T: DeserializeOwned>(url: &str) -> Result<T> {
     let body = get_bytes(url)?;
     parse_json(&body, url)
 }
 
-fn parse_json<T: DeserializeOwned>(body: &[u8], what: &str) -> Result<T> {
+pub(crate) fn parse_json<T: DeserializeOwned>(body: &[u8], what: &str) -> Result<T> {
     serde_json::from_slice(body)
         .with_context(|| tr!(format!("неожиданный ответ от {what}"), format!("unexpected response from {what}")))
 }
@@ -169,7 +191,13 @@ fn parse_content_length(headers: &str) -> Option<u64> {
 }
 
 /// Скачивает `url` в `dest`, сообщая прогресс по мере роста файла.
-fn download(url: &str, dest: &Path, what: &str, total: Option<u64>, progress: &mut dyn FnMut(Progress)) -> Result<()> {
+pub(crate) fn download(
+    url: &str,
+    dest: &Path,
+    what: &str,
+    total: Option<u64>,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<()> {
     let total = total.or_else(|| head_length(url));
     progress(Progress::Download { what: what.to_string(), done: 0, total });
     let mut child = curl()
@@ -208,7 +236,7 @@ fn download(url: &str, dest: &Path, what: &str, total: Option<u64>, progress: &m
 // ───────────────────────────── контрольные суммы ─────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Checksum {
+pub(crate) enum Checksum {
     Sha256(String),
     Sha1(String),
     Md5(String),
@@ -228,7 +256,7 @@ fn hash_file<D: Digest>(path: &Path) -> Result<String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn verify(path: &Path, sum: &Checksum) -> Result<()> {
+pub(crate) fn verify(path: &Path, sum: &Checksum) -> Result<()> {
     let (expected, actual) = match sum {
         Checksum::Sha256(e) => (e, hash_file::<sha2::Sha256>(path)?),
         Checksum::Sha1(e) => (e, hash_file::<sha1::Sha1>(path)?),
@@ -247,16 +275,16 @@ fn verify(path: &Path, sum: &Checksum) -> Result<()> {
 // ───────────────────────────── версии ─────────────────────────────
 
 /// Релизная версия: только цифры и точки (без -rc, -pre, snapshot).
-fn is_release(v: &str) -> bool {
+pub(crate) fn is_release(v: &str) -> bool {
     !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.') && !v.starts_with('.') && !v.ends_with('.')
 }
 
-fn version_key(v: &str) -> Vec<u64> {
+pub(crate) fn version_key(v: &str) -> Vec<u64> {
     v.split('.').map(|p| p.parse().unwrap_or(0)).collect()
 }
 
 /// Оставляет релизы, без повторов, новые сверху.
-fn newest_first(versions: impl IntoIterator<Item = String>) -> Vec<String> {
+pub(crate) fn newest_first(versions: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut v: Vec<String> = versions.into_iter().filter(|v| is_release(v)).collect();
     v.sort_by_key(|s| std::cmp::Reverse(version_key(s)));
     v.dedup();
@@ -270,6 +298,7 @@ pub fn list_versions(core: Core) -> Result<Vec<String>> {
         Core::Purpur => purpur_versions(&get_bytes(PURPUR_API)?)?,
         Core::Fabric => fabric_game_versions(&get_bytes(&format!("{FABRIC_API}/versions/game"))?)?,
         Core::Vanilla => mojang_releases(&get_bytes(MOJANG_MANIFEST)?)?,
+        Core::Velocity => paper_versions(&get_bytes(&format!("{VELOCITY_API}/versions"))?)?,
     };
     if versions.is_empty() {
         bail!(tr!(
@@ -282,17 +311,19 @@ pub fn list_versions(core: Core) -> Result<Vec<String>> {
 
 /// Что и куда скачать.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RemoteFile {
-    url: String,
+pub(crate) struct RemoteFile {
+    pub(crate) url: String,
     /// Имя файла на диске.
-    name: String,
-    size: Option<u64>,
-    checksum: Option<Checksum>,
+    pub(crate) name: String,
+    pub(crate) size: Option<u64>,
+    pub(crate) checksum: Option<Checksum>,
     /// Для сообщений о прогрессе, например «Paper 26.3 #249».
-    label: String,
+    pub(crate) label: String,
+    /// Сборка: номер у Paper / Purpur / Velocity, `загрузчик/лаунчер` у Fabric (`0.20.1/1.1.2`), у Mojang нет.
+    pub(crate) build: Option<String>,
 }
 
-// Paper (Fill API v3)
+// Paper и Velocity (Fill API v3, одинаковый формат)
 
 #[derive(Deserialize)]
 struct PaperVersions {
@@ -301,6 +332,9 @@ struct PaperVersions {
 #[derive(Deserialize)]
 struct PaperVersionEntry {
     version: PaperVersion,
+    /// Номера сборок; у некоторых версий (Velocity 3.5.0) список пуст — скачать нечего.
+    #[serde(default)]
+    builds: Option<Vec<u64>>,
 }
 #[derive(Deserialize)]
 struct PaperVersion {
@@ -334,18 +368,22 @@ struct PaperChecksums {
     sha256: Option<String>,
 }
 
+/// Релизные версии проекта Fill (Paper или Velocity), у которых есть сборки, новые сверху.
 fn paper_versions(body: &[u8]) -> Result<Vec<String>> {
     let v: PaperVersions = parse_json(body, "PaperMC")?;
-    Ok(newest_first(v.versions.into_iter().map(|e| e.version.id)))
+    Ok(newest_first(
+        v.versions.into_iter().filter(|e| e.builds.as_ref().is_none_or(|b| !b.is_empty())).map(|e| e.version.id),
+    ))
 }
 
-/// Минимальная Java по данным PaperMC.
-fn paper_java_minimum(body: &[u8], version: &str) -> Option<u32> {
+/// Минимальная Java по данным PaperMC (ответ `/versions` проекта Paper или Velocity).
+pub(crate) fn paper_java_minimum(body: &[u8], version: &str) -> Option<u32> {
     let v: PaperVersions = serde_json::from_slice(body).ok()?;
     v.versions.into_iter().find(|e| e.version.id == version)?.version.java.map(|j| j.version.minimum)
 }
 
-fn paper_latest(body: &[u8], version: &str) -> Result<Option<RemoteFile>> {
+/// Последняя сборка из ответа `/versions/{v}/builds`. `project` — для подписи: «Paper» или «Velocity».
+fn paper_latest(body: &[u8], project: &str, version: &str) -> Result<Option<RemoteFile>> {
     let builds: Vec<PaperBuild> = parse_json(body, "PaperMC")?;
     let Some(b) = builds.into_iter().filter(|b| b.downloads.contains_key("server:default")).max_by_key(|b| b.id) else {
         return Ok(None);
@@ -357,18 +395,34 @@ fn paper_latest(body: &[u8], version: &str) -> Result<Option<RemoteFile>> {
         name: d.name,
         size: d.size,
         checksum: d.checksums.sha256.map(Checksum::Sha256),
-        label: format!("Paper {version} #{id}"),
+        label: format!("{project} {version} #{id}"),
+        build: Some(id.to_string()),
     }))
 }
 
-fn paper_file(version: &str) -> Result<RemoteFile> {
-    let base = format!("{PAPER_API}/versions/{version}/builds");
-    if let Some(f) = paper_latest(&get_bytes(&format!("{base}?channel=STABLE"))?, version)? {
+/// `api` — [`PAPER_API`] или [`VELOCITY_API`].
+fn fill_file(api: &str, project: &str, version: &str) -> Result<RemoteFile> {
+    let base = format!("{api}/versions/{version}/builds");
+    if let Some(f) = paper_latest(&get_bytes(&format!("{base}?channel=STABLE"))?, project, version)? {
         return Ok(f);
     }
     // Для свежей версии стабильных сборок может ещё не быть — берём последнюю любую.
-    paper_latest(&get_bytes(&base)?, version)?
-        .with_context(|| tr!(format!("у Paper нет сборок для {version}"), format!("Paper has no builds for {version}")))
+    paper_latest(&get_bytes(&base)?, project, version)?.with_context(|| {
+        tr!(format!("у {project} нет сборок для {version}"), format!("{project} has no builds for {version}"))
+    })
+}
+
+/// Минимальная Java для версии Velocity по Fill API (или [`VELOCITY_DEFAULT_JAVA`]).
+pub(crate) fn velocity_java(version: &str) -> u32 {
+    get_bytes(&format!("{VELOCITY_API}/versions"))
+        .ok()
+        .and_then(|b| paper_java_minimum(&b, version))
+        .unwrap_or(VELOCITY_DEFAULT_JAVA)
+}
+
+/// Минимальная Java для версии Paper по Fill API (если API ответил и версию знает).
+pub(crate) fn paper_java(version: &str) -> Option<u32> {
+    paper_java_minimum(&get_bytes(&format!("{PAPER_API}/versions")).ok()?, version)
 }
 
 // Purpur (v2)
@@ -405,6 +459,7 @@ fn purpur_latest(body: &[u8], version: &str) -> Result<RemoteFile> {
         size: None,
         checksum: b.md5.map(Checksum::Md5),
         label: format!("Purpur {version} #{}", b.build),
+        build: Some(b.build),
     })
 }
 
@@ -453,6 +508,7 @@ fn fabric_file(version: &str) -> Result<RemoteFile> {
         size: None,
         checksum: None,
         label: format!("Fabric {version} (loader {loader})"),
+        build: Some(format!("{loader}/{installer}")),
     })
 }
 
@@ -501,9 +557,9 @@ fn mojang_version_url(body: &[u8], version: &str) -> Result<Option<(String, Opti
     Ok(m.versions.into_iter().find(|v| v.id == version).map(|v| (v.url, v.sha1)))
 }
 
-struct MojangInfo {
+pub(crate) struct MojangInfo {
     /// `javaVersion.majorVersion`; у очень старых версий поля нет — тогда Java 8.
-    java: u32,
+    pub(crate) java: u32,
     server: Option<RemoteFile>,
 }
 
@@ -515,11 +571,12 @@ fn mojang_info(body: &[u8], version: &str) -> Result<MojangInfo> {
         size: d.size,
         checksum: Some(Checksum::Sha1(d.sha1)),
         label: format!("Minecraft {version}"),
+        build: None,
     });
     Ok(MojangInfo { java: v.java_version.map_or(8, |j| j.major_version), server })
 }
 
-fn fetch_mojang(version: &str) -> Result<MojangInfo> {
+pub(crate) fn fetch_mojang(version: &str) -> Result<MojangInfo> {
     let (url, sha1) = mojang_version_url(&get_bytes(MOJANG_MANIFEST)?, version)?.with_context(|| {
         tr!(format!("Mojang не знает версию {version}"), format!("Mojang has no version {version}"))
     })?;
@@ -547,7 +604,7 @@ pub fn parse_java_major(output: &str) -> Option<u32> {
     if first == 1 { parts.next()?.parse().ok() } else { Some(first) }
 }
 
-fn java_major(java: &Path) -> Option<u32> {
+pub(crate) fn java_major(java: &Path) -> Option<u32> {
     let out = Command::new(java).arg("-version").stdin(Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
@@ -557,13 +614,13 @@ fn java_major(java: &Path) -> Option<u32> {
 }
 
 /// Ищет программу в PATH.
-fn which(name: &str) -> Option<PathBuf> {
+pub(crate) fn which(name: &str) -> Option<PathBuf> {
     let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(&exe)).find(|p| p.is_file())
 }
 
 /// Версия системной `java` из PATH, если она есть.
-fn system_java_major() -> Option<u32> {
+pub(crate) fn system_java_major() -> Option<u32> {
     let path = which("java")?;
     // В macOS /usr/bin/java — заглушка: без установленной JDK она открывает окно «установите Java».
     if cfg!(target_os = "macos") && path == Path::new("/usr/bin/java") {
@@ -636,6 +693,7 @@ fn adoptium_asset(body: &[u8], feature: u32) -> Result<Option<RemoteFile>> {
             size: a.binary.package.size,
             checksum: a.binary.package.checksum.map(Checksum::Sha256),
             label: format!("Java {feature} (Temurin JRE {release})"),
+            build: None,
         }
     }))
 }
@@ -651,7 +709,7 @@ fn java_candidates(required: u32, lts: &[u32]) -> Vec<u32> {
     v
 }
 
-fn find_jre(required: u32) -> Result<(u32, RemoteFile)> {
+pub(crate) fn find_jre(required: u32) -> Result<(u32, RemoteFile)> {
     let (Some(os), Some(arch)) = (adoptium_os(), adoptium_arch()) else {
         bail!(tr!(
             format!("для этой системы нет готовой Java — установите Java {required}+ вручную"),
@@ -676,7 +734,7 @@ fn find_jre(required: u32) -> Result<(u32, RemoteFile)> {
 }
 
 /// Распаковывает .tar.gz или .zip в `dest`.
-fn extract(archive: &Path, dest: &Path) -> Result<()> {
+pub(crate) fn extract(archive: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     let name = archive.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
     let file = std::fs::File::open(archive)?;
@@ -689,7 +747,7 @@ fn extract(archive: &Path, dest: &Path) -> Result<()> {
 }
 
 /// Путь к `java` внутри распакованной JRE: `<jdk>/bin/java` или `<jdk>/Contents/Home/bin/java` (macOS).
-fn find_java_binary(root: &Path) -> Option<PathBuf> {
+pub(crate) fn find_java_binary(root: &Path) -> Option<PathBuf> {
     let exe = if cfg!(windows) { "java.exe" } else { "java" };
     let mut dirs = vec![root.to_path_buf()];
     let mut subdirs: Vec<PathBuf> =
@@ -733,7 +791,7 @@ fn check_target_dir(dir: &Path) -> Result<bool> {
 }
 
 /// Значение в кавычках для sh, если без них нельзя.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-/+=:".contains(c)) {
         s.to_string()
     } else {
@@ -741,7 +799,7 @@ fn sh_quote(s: &str) -> String {
     }
 }
 
-fn bat_quote(s: &str) -> String {
+pub(crate) fn bat_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || r"._-\+=:".contains(c)) {
         s.to_string()
     } else {
@@ -754,18 +812,20 @@ fn memory_args(memory_mb: u32) -> [String; 2] {
 }
 
 /// Текст start.sh (`windows = false`) или start.bat. `java` — `java` или путь относительно папки сервера.
+/// `nogui` может быть пустым (Velocity).
 pub fn start_script(java: &str, memory_mb: u32, jar: &str, nogui: &str, windows: bool) -> String {
     let [xms, xmx] = memory_args(memory_mb);
+    let nogui = if nogui.is_empty() { String::new() } else { format!(" {nogui}") };
     if windows {
         let java = java.replace('/', "\\");
         format!(
-            "@echo off\r\nrem Generated by mctui\r\ncd /d \"%~dp0\"\r\n{} {xms} {xmx} -jar {} {nogui} %*\r\n",
+            "@echo off\r\nrem Generated by mctui\r\ncd /d \"%~dp0\"\r\n{} {xms} {xmx} -jar {}{nogui} %*\r\n",
             bat_quote(&java),
             bat_quote(jar)
         )
     } else {
         format!(
-            "#!/bin/sh\n# Generated by mctui\ncd \"$(dirname \"$0\")\" || exit 1\nexec {} {xms} {xmx} -jar {} {nogui} \"$@\"\n",
+            "#!/bin/sh\n# Generated by mctui\ncd \"$(dirname \"$0\")\" || exit 1\nexec {} {xms} {xmx} -jar {}{nogui} \"$@\"\n",
             sh_quote(java),
             sh_quote(jar)
         )
@@ -783,15 +843,15 @@ fn server_properties(port: u16) -> String {
 }
 
 /// Удаляет созданное, если `create` не дошёл до конца.
-struct Cleanup {
-    dir: PathBuf,
-    created_dir: bool,
-    paths: Vec<PathBuf>,
-    armed: bool,
+pub(crate) struct Cleanup {
+    pub(crate) dir: PathBuf,
+    pub(crate) created_dir: bool,
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) armed: bool,
 }
 
 impl Cleanup {
-    fn track(&mut self, p: PathBuf) -> PathBuf {
+    pub(crate) fn track(&mut self, p: PathBuf) -> PathBuf {
         self.paths.push(p.clone());
         p
     }
@@ -817,7 +877,7 @@ impl Drop for Cleanup {
 }
 
 /// Скачивает файл во временный `<name>.part`, проверяет сумму и переименовывает.
-fn fetch_file(
+pub(crate) fn fetch_file(
     file: &RemoteFile,
     dir: &Path,
     guard: &mut Cleanup,
@@ -834,19 +894,89 @@ fn fetch_file(
     Ok(dest)
 }
 
-fn server_file(core: Core, version: &str, mojang: &MojangInfo) -> Result<RemoteFile> {
+/// Последняя сборка ядра для версии. Для Vanilla нужен `mojang` (описание версии от Mojang).
+pub(crate) fn server_file(core: Core, version: &str, mojang: Option<&MojangInfo>) -> Result<RemoteFile> {
     match core {
-        Core::Paper => paper_file(version),
+        Core::Paper => fill_file(PAPER_API, "Paper", version),
+        Core::Velocity => fill_file(VELOCITY_API, "Velocity", version),
         Core::Purpur => purpur_file(version),
         Core::Fabric => fabric_file(version),
-        Core::Vanilla => mojang.server.clone().with_context(|| {
+        Core::Vanilla => mojang.and_then(|m| m.server.clone()).with_context(|| {
             tr!(format!("у Minecraft {version} нет серверного jar"), format!("Minecraft {version} has no server jar"))
         }),
     }
 }
 
+/// Какая Java нужна для `version` ядра `core`; для игровых ядер заодно возвращает описание версии Mojang.
+pub(crate) fn required_java(core: Core, version: &str) -> Result<(u32, Option<MojangInfo>)> {
+    if core.is_proxy() {
+        return Ok((velocity_java(version), None));
+    }
+    let mojang = fetch_mojang(version)?;
+    let mut required = mojang.java;
+    if matches!(core, Core::Paper | Core::Purpur)
+        && let Some(min) = paper_java(version)
+    {
+        required = required.max(min);
+    }
+    Ok((required, Some(mojang)))
+}
+
+/// Java не ниже `required`: системная из PATH, если подходит, иначе Temurin JRE, скачанная в `dir/<jre_dir>`.
+/// Возвращает команду для скрипта (`java` или путь относительно `dir` через `/`) и путь к программе.
+pub(crate) fn provide_java(
+    dir: &Path,
+    jre_dir: &str,
+    required: u32,
+    guard: &mut Cleanup,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<(String, PathBuf)> {
+    match system_java_major() {
+        Some(major) if major >= required => {
+            progress(Progress::Step(tr!(
+                format!("Использую системную Java {major} (нужна {required}+)"),
+                format!("Using system Java {major} ({required}+ required)")
+            )));
+            Ok(("java".to_string(), PathBuf::from("java")))
+        }
+        found => {
+            let why = match found {
+                Some(m) => tr!(format!("системная Java {m} слишком старая"), format!("system Java {m} is too old")),
+                None => tr!("Java не найдена".to_string(), "Java not found".to_string()),
+            };
+            progress(Progress::Step(tr!(
+                format!("{why} — скачиваю Java {required}…"),
+                format!("{why} — downloading Java {required}…")
+            )));
+            let (feature, jre) = find_jre(required)?;
+            let jre_dir = guard.track(dir.join(jre_dir));
+            std::fs::create_dir_all(&jre_dir)?;
+            let archive = fetch_file(&jre, &jre_dir, guard, progress)?;
+            progress(Progress::Step(tr!("Распаковываю Java…", "Unpacking Java…").to_string()));
+            extract(&archive, &jre_dir)
+                .with_context(|| tr!("не удалось распаковать Java", "failed to unpack Java").to_string())?;
+            let _ = std::fs::remove_file(&archive);
+            let bin = find_java_binary(&jre_dir)
+                .with_context(|| tr!("в архиве Java нет bin/java", "no bin/java in the Java archive").to_string())?;
+            match java_major(&bin) {
+                Some(m) if m >= required => {}
+                _ => bail!(tr!(
+                    format!("скачанная Java {feature} не запускается"),
+                    format!("downloaded Java {feature} does not run")
+                )),
+            }
+            let rel = bin.strip_prefix(dir).unwrap_or(&bin).to_string_lossy().replace('\\', "/");
+            Ok((rel, bin))
+        }
+    }
+}
+
+/// Создаёт сервер (или прокси Velocity) в пустой папке. Для Velocity EULA не нужна, вместо eula.txt и
+/// server.properties пишется velocity.toml (из `default-velocity.toml` внутри jar) с `bind = "0.0.0.0:<port>"`
+/// и пустым списком серверов — их добавляет [`crate::velocity::link`].
 pub fn create(opts: &CreateOptions, progress: &mut dyn FnMut(Progress)) -> Result<Created> {
-    if !opts.accept_eula {
+    let core = opts.core;
+    if !opts.accept_eula && !core.is_proxy() {
         bail!(tr!(
             format!("нужно принять EULA Minecraft ({EULA_URL}) — без этого сервер не запустится"),
             format!("you must accept the Minecraft EULA ({EULA_URL}) — the server won't start without it")
@@ -865,7 +995,6 @@ pub fn create(opts: &CreateOptions, progress: &mut dyn FnMut(Progress)) -> Resul
     if version.is_empty() {
         bail!(tr!("не выбрана версия", "no version selected"));
     }
-    let core = opts.core;
     let dir = opts.dir.clone();
 
     progress(Progress::Step(tr!("Проверяю папку…", "Checking the folder…").to_string()));
@@ -881,76 +1010,43 @@ pub fn create(opts: &CreateOptions, progress: &mut dyn FnMut(Progress)) -> Resul
     let mut guard = Cleanup { dir: dir.clone(), created_dir: !existed, paths: Vec::new(), armed: true };
 
     progress(Progress::Step(tr!(
-        format!("Узнаю, какая Java нужна для Minecraft {version}…"),
-        format!("Checking which Java Minecraft {version} needs…")
+        format!("Узнаю, какая Java нужна для {} {version}…", core.label()),
+        format!("Checking which Java {} {version} needs…", core.label())
     )));
-    let mojang = fetch_mojang(version)?;
-    let mut required = mojang.java;
-    if core == Core::Paper
-        && let Ok(body) = get_bytes(&format!("{PAPER_API}/versions"))
-        && let Some(min) = paper_java_minimum(&body, version)
-    {
-        required = required.max(min);
-    }
+    let (required, mojang) = required_java(core, version)?;
 
     progress(Progress::Step(tr!(
         format!("Ищу последнюю сборку {} {version}…", core.label()),
         format!("Looking up the latest {} {version} build…", core.label())
     )));
-    let remote = server_file(core, version, &mojang)?;
-    fetch_file(&remote, &dir, &mut guard, progress)?;
+    let remote = server_file(core, version, mojang.as_ref())?;
+    let jar_path = fetch_file(&remote, &dir, &mut guard, progress)?;
     let jar = remote.name.clone();
 
-    // Java
-    let (java_cmd, java_path) = match system_java_major() {
-        Some(major) if major >= required => {
-            progress(Progress::Step(tr!(
-                format!("Использую системную Java {major} (нужна {required}+)"),
-                format!("Using system Java {major} ({required}+ required)")
-            )));
-            ("java".to_string(), PathBuf::from("java"))
-        }
-        found => {
-            let why = match found {
-                Some(m) => tr!(format!("системная Java {m} слишком старая"), format!("system Java {m} is too old")),
-                None => tr!("Java не найдена".to_string(), "Java not found".to_string()),
-            };
-            progress(Progress::Step(tr!(
-                format!("{why} — скачиваю Java {required}…"),
-                format!("{why} — downloading Java {required}…")
-            )));
-            let (feature, jre) = find_jre(required)?;
-            let jre_dir = guard.track(dir.join("jre"));
-            std::fs::create_dir_all(&jre_dir)?;
-            let archive = fetch_file(&jre, &jre_dir, &mut guard, progress)?;
-            progress(Progress::Step(tr!("Распаковываю Java…", "Unpacking Java…").to_string()));
-            extract(&archive, &jre_dir)
-                .with_context(|| tr!("не удалось распаковать Java", "failed to unpack Java").to_string())?;
-            let _ = std::fs::remove_file(&archive);
-            let bin = find_java_binary(&jre_dir)
-                .with_context(|| tr!("в архиве Java нет bin/java", "no bin/java in the Java archive").to_string())?;
-            match java_major(&bin) {
-                Some(m) if m >= required => {}
-                _ => bail!(tr!(
-                    format!("скачанная Java {feature} не запускается"),
-                    format!("downloaded Java {feature} does not run")
-                )),
-            }
-            let rel = bin.strip_prefix(&dir).unwrap_or(&bin).to_string_lossy().replace('\\', "/");
-            (rel, bin)
-        }
-    };
+    let (java_cmd, java_path) = provide_java(&dir, "jre", required, &mut guard, progress)?;
 
-    progress(Progress::Step(
-        tr!(
-            "Записываю eula.txt, server.properties и скрипт запуска…",
-            "Writing eula.txt, server.properties and the start script…"
-        )
-        .to_string(),
-    ));
-    let now = chrono::Local::now().format("%a %b %d %H:%M:%S %Z %Y").to_string();
-    std::fs::write(guard.track(dir.join("eula.txt")), eula_text(&now))?;
-    std::fs::write(guard.track(dir.join("server.properties")), server_properties(opts.port))?;
+    if core.is_proxy() {
+        progress(Progress::Step(
+            tr!("Записываю velocity.toml и скрипт запуска…", "Writing velocity.toml and the start script…").to_string(),
+        ));
+        // Без default-velocity.toml в jar (очень старые сборки) Velocity сам создаст файл при первом запуске
+        // на порту 25565 — тогда порт поменяет velocity::link / set_bind.
+        if let Some(default) = crate::velocity::default_config(&jar_path) {
+            let text = crate::velocity::initial_config(&default, opts.port)?;
+            std::fs::write(guard.track(dir.join(crate::velocity::CONFIG)), text)?;
+        }
+    } else {
+        progress(Progress::Step(
+            tr!(
+                "Записываю eula.txt, server.properties и скрипт запуска…",
+                "Writing eula.txt, server.properties and the start script…"
+            )
+            .to_string(),
+        ));
+        let now = chrono::Local::now().format("%a %b %d %H:%M:%S %Z %Y").to_string();
+        std::fs::write(guard.track(dir.join("eula.txt")), eula_text(&now))?;
+        std::fs::write(guard.track(dir.join("server.properties")), server_properties(opts.port))?;
+    }
     let windows = cfg!(windows);
     let script_name = if windows { "start.bat" } else { "start.sh" };
     let script = guard.track(dir.join(script_name));
@@ -1030,9 +1126,33 @@ mod tests {
     #[test]
     fn core_labels() {
         assert_eq!(Core::ALL.map(Core::label), ["Paper", "Purpur", "Fabric", "Vanilla"]);
-        for c in Core::ALL {
+        assert_eq!(Core::WITH_PROXY.map(Core::label), ["Paper", "Purpur", "Fabric", "Vanilla", "Velocity"]);
+        for c in Core::WITH_PROXY {
             assert!(!c.description().is_empty());
+            assert_eq!(c.is_proxy(), c == Core::Velocity);
         }
+        assert_eq!(Core::Velocity.nogui(), "");
+    }
+
+    // Укороченный ответ fill.papermc.io/v3/projects/velocity/versions (ноябрь 2026).
+    const VELOCITY_VERSIONS: &str = r#"{"versions":[
+        {"version":{"id":"4.3.2-SNAPSHOT","support":{"status":"SUPPORTED"},"java":{"version":{"minimum":25}}},"builds":[46,47,48,49]},
+        {"version":{"id":"4.3.1","support":{"status":"SUPPORTED"},"java":{"version":{"minimum":25}}},"builds":[45]},
+        {"version":{"id":"3.5.1","support":{"status":"DEPRECATED"},"java":{"version":{"minimum":21}}},"builds":[615]},
+        {"version":{"id":"3.5.0","support":{"status":"UNSUPPORTED"},"java":{"version":{"minimum":21}}},"builds":[]},
+        {"version":{"id":"3.4.0-SNAPSHOT","support":{"status":"UNSUPPORTED"},"java":{"version":{"minimum":17}}},"builds":[561,562,563]},
+        {"version":{"id":"3.4.0","support":{"status":"UNSUPPORTED"},"java":{"version":{"minimum":17}}},"builds":[566]}]}"#;
+
+    #[test]
+    fn velocity_json() {
+        // Только релизы со сборками: 3.5.0 без сборок и SNAPSHOT отброшены.
+        assert_eq!(paper_versions(VELOCITY_VERSIONS.as_bytes()).unwrap(), ["4.3.1", "3.5.1", "3.4.0"]);
+        assert_eq!(paper_java_minimum(VELOCITY_VERSIONS.as_bytes(), "4.3.1"), Some(25));
+        assert_eq!(paper_java_minimum(VELOCITY_VERSIONS.as_bytes(), "3.4.0-SNAPSHOT"), Some(17));
+        let builds = PAPER_BUILDS.replace("paper-26.3-", "velocity-4.3.1-");
+        let f = paper_latest(builds.as_bytes(), "Velocity", "4.3.1").unwrap().unwrap();
+        assert_eq!(f.name, "velocity-4.3.1-249.jar");
+        assert_eq!(f.label, "Velocity 4.3.1 #249");
     }
 
     #[test]
@@ -1049,7 +1169,7 @@ mod tests {
         assert_eq!(paper_java_minimum(PAPER_VERSIONS.as_bytes(), "26.3"), Some(25));
         assert_eq!(paper_java_minimum(PAPER_VERSIONS.as_bytes(), "1.21.11"), Some(21));
         assert_eq!(paper_java_minimum(PAPER_VERSIONS.as_bytes(), "9.9"), None);
-        let f = paper_latest(PAPER_BUILDS.as_bytes(), "26.3").unwrap().unwrap();
+        let f = paper_latest(PAPER_BUILDS.as_bytes(), "Paper", "26.3").unwrap().unwrap();
         assert_eq!(f.name, "paper-26.3-249.jar");
         assert_eq!(f.size, Some(55281059));
         assert!(f.url.ends_with("/paper-26.3-249.jar"));
@@ -1058,7 +1178,8 @@ mod tests {
             Some(Checksum::Sha256("4c734aeb4da98845934af1e5481f0df7c80ad3ca50d272319ffe2b0e8a187c8a".into()))
         );
         assert_eq!(f.label, "Paper 26.3 #249");
-        assert_eq!(paper_latest(b"[]", "26.3").unwrap(), None);
+        assert_eq!(f.build.as_deref(), Some("249"));
+        assert_eq!(paper_latest(b"[]", "Paper", "26.3").unwrap(), None);
     }
 
     #[test]
@@ -1167,6 +1288,10 @@ mod tests {
                 .contains("\"C:\\Program Files\\Java\\bin\\java.exe\" -Xms1024M -Xmx1024M")
         );
         assert_eq!(server_properties(25570), "#Minecraft server properties\nserver-port=25570\n");
+        let sh = start_script("java", 512, "velocity-4.3.1-45.jar", Core::Velocity.nogui(), false);
+        assert!(sh.ends_with("exec java -Xms512M -Xmx512M -jar velocity-4.3.1-45.jar \"$@\"\n"), "{sh}");
+        let bat = start_script("java", 512, "velocity-4.3.1-45.jar", "", true);
+        assert!(bat.ends_with("java -Xms512M -Xmx512M -jar velocity-4.3.1-45.jar %*\r\n"), "{bat}");
         assert!(eula_text("now").ends_with("\neula=true\n"));
     }
 
@@ -1200,6 +1325,11 @@ mod tests {
         opts.accept_eula = true;
         opts.memory_mb = 100;
         assert!(create(&opts, &mut sink).is_err());
+        // Velocity не требует EULA, но память проверяется так же.
+        opts.core = Core::Velocity;
+        opts.accept_eula = false;
+        let err = create(&opts, &mut sink).unwrap_err().to_string();
+        assert!(!err.contains("EULA"), "{err}");
         assert!(!d.exists());
     }
 
@@ -1274,7 +1404,7 @@ mod tests {
     #[test]
     #[ignore = "network"]
     fn create_net_list_versions() {
-        for core in Core::ALL {
+        for core in Core::WITH_PROXY {
             let v = list_versions(core).unwrap();
             assert!(v.len() > 5, "{core:?}: {v:?}");
             assert!(v.iter().all(|x| is_release(x)), "{core:?}: {v:?}");
@@ -1308,8 +1438,29 @@ mod tests {
             println!("{c:?}");
             let jar = d.join(&c.jar);
             assert!(std::fs::metadata(&jar)?.len() > 100_000);
-            assert!(std::fs::read_to_string(d.join("eula.txt"))?.contains("eula=true"));
-            assert!(std::fs::read_to_string(d.join("server.properties"))?.contains("server-port=25599"));
+            if core.is_proxy() {
+                assert!(!d.join("eula.txt").exists() && !d.join("server.properties").exists());
+                assert_eq!(crate::velocity::proxy_port(&d), Some(25599));
+                println!("{}", std::fs::read_to_string(d.join(crate::velocity::CONFIG))?);
+                // Сеть из одного (несуществующего) Paper-сервера: velocity.toml и секрет.
+                let backend = d.join("lobby");
+                std::fs::create_dir_all(&backend)?;
+                std::fs::write(backend.join("paper-1.21.11-1.jar"), b"")?;
+                let r = crate::velocity::link(
+                    &d,
+                    &[crate::velocity::Backend { name: "lobby".into(), dir: backend.clone(), port: 25600 }],
+                )?;
+                println!("{r:#?}");
+                let toml = std::fs::read_to_string(d.join(crate::velocity::CONFIG))?;
+                println!("{toml}");
+                let t: toml::Table = toml.parse()?;
+                assert_eq!(t["servers"]["lobby"].as_str(), Some("127.0.0.1:25600"));
+                assert_eq!(t["player-info-forwarding-mode"].as_str(), Some("modern"));
+                assert!(d.join("forwarding.secret").is_file());
+            } else {
+                assert!(std::fs::read_to_string(d.join("eula.txt"))?.contains("eula=true"));
+                assert!(std::fs::read_to_string(d.join("server.properties"))?.contains("server-port=25599"));
+            }
             let script = std::fs::read_to_string(d.join(if cfg!(windows) { "start.bat" } else { "start.sh" }))?;
             println!("{script}");
             assert!(script.contains(&c.jar));
@@ -1364,5 +1515,11 @@ mod tests {
     #[ignore = "network"]
     fn create_net_fabric() {
         run_create(Core::Fabric, "1.21.11");
+    }
+
+    #[test]
+    #[ignore = "network, ~45 MB (+ Java 25, if missing)"]
+    fn create_net_velocity() {
+        run_create(Core::Velocity, &list_versions(Core::Velocity).unwrap()[0]);
     }
 }
