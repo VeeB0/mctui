@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-13
+
 ### Добавлено
 - **Предупреждения о нагрузке**: низкий TPS (< 15 дольше минуты), компьютеру не хватает памяти,
   на диске сервера меньше 2 ГиБ, `OutOfMemoryError` в логе. Показываются на вкладке «Статус» и значком ⚠
@@ -89,7 +91,8 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/VeeB0/mctui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/VeeB0/mctui/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/VeeB0/mctui/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VeeB0/mctui/releases/tag/v0.1.0
