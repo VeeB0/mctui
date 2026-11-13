@@ -607,6 +607,9 @@ async fn datapack_reload_declined_leaves_a_hint() {
         open_datapacks(&mut a);
         key(&mut a, ' ');
         assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::ReloadDatapacks(0), .. })));
+        // Подсказка живёт в самом вопросе: тост исчезнет через 5 с, а вопрос может висеть дольше.
+        let Some(Popup::Confirm { text, .. }) = &a.popup else { unreachable!() };
+        assert!(text.contains("If you decline") && text.contains("minecraft:reload"), "{text}");
         press(&mut a, KeyCode::Esc);
         assert!(a.popup.is_none());
         assert!(sent_commands(&mut rx).is_empty());
@@ -1024,6 +1027,25 @@ async fn addon_search_failed_popular_offers_retry() {
 }
 
 #[tokio::test]
+async fn addon_search_failed_next_page_has_no_retry_hint() {
+    use crate::plugin_search::Source;
+    let srv = paper_search("retry-next-page");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let more = hit_from(Source::Modrinth, "First").map(|r| crate::plugin_search::SearchResults { more: true, ..r });
+        a.apply_plugin_search(search_req(&a), more);
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        a.apply_plugin_search(search_req(&a), Err(anyhow::anyhow!("boom")));
+        let p = panel_of(&a);
+        assert!(p.lines[0].text.contains("boom"), "{}", p.lines[0].text);
+        assert!(!p.lines[0].text.contains("Enter to retry"), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
 async fn addon_search_dedupes_project_across_pages() {
     use crate::plugin_search::Source;
     let srv = paper_search("dedupe-pages");
@@ -1092,4 +1114,87 @@ async fn cached_vanilla_verdict_does_not_block_detected_core() {
         key(&mut a, 'i');
         assert!(matches!(a.popup, Some(Popup::Panel(_))), "поиск открывается, ядро Paper определено заново");
     });
+}
+
+/// Вкладка «Мир» с уже прочитанным миром (без ожидания фонового обхода).
+fn open_world(a: &mut App, srv: &TempServer) {
+    key(a, '7');
+    press(a, KeyCode::Down);
+    a.world.info = Some(crate::world::scan(&srv.0, "world"));
+    a.world.sel = 0;
+}
+
+#[tokio::test]
+async fn overworld_reset_needs_confirm_and_world_name() {
+    let srv = TempServer::new("reset-overworld");
+    for f in ["level.dat", "region/r.0.0.mca", "playerdata/a.dat"] {
+        let p = srv.level().join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"x").unwrap();
+    }
+    with_lang(Lang::En, || {
+        // Сервер запущен — даже не спрашиваем.
+        let mut a = app(vec![srv.view(Some(&[]))]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("Stop the server first"), "{}", toast_text(&a));
+        // Упал и вот-вот перезапустится сам / идёт бэкап — тоже нет.
+        let mut v = srv.view(None);
+        v.status = crate::server::Status::Restarting;
+        v.restart_in = Some(5);
+        let mut a = app(vec![v]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("Stop the server first"), "{}", toast_text(&a));
+        let mut v = srv.view(None);
+        v.backup_progress = Some("50%".into());
+        let mut a = app(vec![v]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("backup"), "{}", toast_text(&a));
+
+        let mut a = app(vec![srv.view(None)]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        let Some(Popup::Confirm { text, action: Action::AskOverworldName { .. }, .. }) = &a.popup else {
+            panic!("expected the Overworld warning")
+        };
+        assert!(text.contains("same seed") && text.contains(".pechka-before-reset/"), "{text}");
+        // Длинное предупреждение целиком помещается на 80×24 вместе с кнопками.
+        let screen = render(&a, 80, 24);
+        assert!(screen.contains("type the world name.") && screen.contains("Enter / y"), "{screen}");
+        // Esc — отмена.
+        press(&mut a, KeyCode::Esc);
+        assert!(a.popup.is_none());
+        // Enter в предупреждении ведёт ко вводу имени, неверное имя ничего не трогает.
+        key(&mut a, 'R');
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.popup, Some(Popup::Edit { target: crate::app::EditTarget::ResetOverworld { .. }, .. })));
+        for c in "wrld".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("did not match"), "{}", toast_text(&a));
+        // Верное имя — ландшафт уходит в копию, игроки остаются.
+        key(&mut a, 'R');
+        press(&mut a, KeyCode::Enter);
+        for c in "world".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while srv.level().join("region").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!srv.level().join("region").exists());
+    assert!(srv.level().join("playerdata/a.dat").exists());
+    assert!(srv.level().join("level.dat").exists());
+    let stash = crate::world::reset_stashes(&srv.0);
+    assert_eq!(stash.len(), 1);
+    assert!(stash[0].join("world/region/r.0.0.mca").exists());
 }

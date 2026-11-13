@@ -98,6 +98,7 @@ impl App {
                         EditTarget::Opt(o) => self.apply_opt(o, &v),
                         EditTarget::AccessAdd(list) => self.access_add(list, &v),
                         EditTarget::PregenRadius(dim) => self.run_pregen(dim, &v),
+                        EditTarget::ResetOverworld { id, level } => self.confirm_reset_overworld(id, level, &v),
                         EditTarget::JvmMemory { xms_equal } => self.set_jvm_memory(v.trim(), xms_equal),
                         EditTarget::LogSearch => {
                             if !v.trim().is_empty() {

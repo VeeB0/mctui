@@ -21,7 +21,7 @@ pub fn draw(app: &App, f: &mut Frame) {
             // Высота — по тексту (с переносами), чтобы длинные подтверждения не обрезались.
             let w: u16 = 76;
             let inner = (w.min(f.area().width).saturating_sub(2)).max(1) as usize;
-            let rows: usize = text.lines().map(|l| l.chars().count().div_ceil(inner).max(1)).sum();
+            let rows: usize = text.lines().map(|l| wrapped_rows(l, inner)).sum();
             let r = centered(f.area(), w, (rows + 4).max(8) as u16);
             f.render_widget(Clear, r);
             let b = Block::bordered().title(format!(" {title} ")).border_style(Style::new().fg(theme::WARN));
@@ -80,7 +80,9 @@ pub fn draw(app: &App, f: &mut Frame) {
         Popup::Edit { title, input, target } => {
             let r = centered(f.area(), 70, 6);
             f.render_widget(Clear, r);
-            let b = Block::bordered().title(format!(" {title} ")).border_style(Style::new().fg(theme::ACCENT));
+            let danger = matches!(target, crate::app::EditTarget::ResetOverworld { .. });
+            let border = if danger { theme::WARN } else { theme::ACCENT };
+            let b = Block::bordered().title(format!(" {title} ")).border_style(Style::new().fg(border));
             let inner = b.inner(r);
             let lines = vec![
                 Line::from(vec![Span::styled("› ", Style::new().fg(theme::ACCENT)), Span::raw(input.value.clone())]),
@@ -96,6 +98,9 @@ pub fn draw(app: &App, f: &mut Frame) {
                         crate::app::EditTarget::Chat => {
                             crate::tr!("Enter — отправить · Esc — отмена", "Enter — send · Esc — cancel")
                         }
+                        crate::app::EditTarget::ResetOverworld { .. } => {
+                            crate::tr!("Enter — пересоздать · Esc — отмена", "Enter — recreate · Esc — cancel")
+                        }
                         _ => crate::tr!("Enter — сохранить · Esc — отмена", "Enter — save · Esc — cancel"),
                     },
                     Style::new().fg(theme::MUTED),
@@ -107,6 +112,26 @@ pub fn draw(app: &App, f: &mut Frame) {
             f.set_cursor_position((inner.x + cur - scroll, inner.y));
         }
     }
+}
+
+/// Сколько строк займёт `line` при переносе по словам в ширину `width` (как `Wrap { trim: true }`).
+fn wrapped_rows(line: &str, width: usize) -> usize {
+    let mut rows = 1;
+    let mut cur = 0;
+    for w in line.split_whitespace() {
+        let len = w.chars().count();
+        if cur > 0 && cur + 1 + len > width {
+            rows += 1;
+            cur = 0;
+        }
+        cur = if cur == 0 { len } else { cur + 1 + len };
+        while cur > width {
+            // слово длиннее строки режется
+            rows += 1;
+            cur -= width;
+        }
+    }
+    rows
 }
 
 /// Ширина колонки клавиш в справке.
@@ -142,4 +167,19 @@ fn draw_help(app: &App, f: &mut Frame, scroll: u16) {
         .title_bottom(Line::styled(footer, Style::new().fg(theme::MUTED)))
         .border_style(Style::new().fg(theme::ACCENT));
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(b), r);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapped_rows;
+
+    #[test]
+    fn wrapped_rows_counts_word_wrap() {
+        assert_eq!(wrapped_rows("", 10), 1);
+        assert_eq!(wrapped_rows("aaaa bbbb", 9), 1);
+        assert_eq!(wrapped_rows("aaaa bbbb", 8), 2);
+        assert_eq!(wrapped_rows("aaa bbbbbbb", 10), 2); // посимвольно влезло бы в 2, по словам — тоже
+        assert_eq!(wrapped_rows("ааааа ббббб ввввв", 11), 2);
+        assert_eq!(wrapped_rows("abcdefghijklmnopqrstuvwxy", 10), 3);
+    }
 }

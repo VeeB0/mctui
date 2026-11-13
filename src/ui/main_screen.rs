@@ -180,17 +180,18 @@ fn draw_sidebar(app: &App, f: &mut Frame, area: Rect) {
 }
 
 fn draw_tabs(app: &App, f: &mut Frame, area: Rect) {
+    let active = TABS.iter().position(|t| *t == app.tab).unwrap_or(0);
     let mut spans = vec![];
-    for (i, t) in TABS.iter().enumerate() {
+    for (i, label) in layout::tab_labels(area.width, active).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled("│", Style::new().fg(theme::BORDER)));
         }
-        let style = if *t == app.tab {
+        let style = if i == active {
             Style::new().fg(theme::BUTTON_FG).bg(theme::HIGHLIGHT_BG).bold()
         } else {
             Style::new().fg(theme::MUTED)
         };
-        spans.push(Span::styled(layout::tab_label(i), style));
+        spans.push(Span::styled(label, style));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -1084,8 +1085,8 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "↑↓ select · n new · r restore · d delete · u refresh"
         ),
         (Focus::Content, Tab::World) => tr!(
-            "↑↓ выбор · R сбросить Незер/Энд · p сгенерировать чанки · P/C пауза/продолжить · x отменить · Enter сменить мир · u обновить",
-            "↑↓ select · R reset Nether/End · p pregenerate · P/C pause/continue · x cancel · Enter switch world · u rescan"
+            "↑↓ выбор · R сбросить измерение · p сгенерировать чанки · P/C пауза/продолжить · x отменить · Enter сменить мир · u обновить",
+            "↑↓ select · R reset a dimension · p pregenerate · P/C pause/continue · x cancel · Enter switch world · u rescan"
         ),
         (Focus::Content, Tab::Status) => tr!(
             "f как друзьям зайти · U обновить ядро · T тестовая копия · J Java и память · v сеть Velocity · Enter команда",

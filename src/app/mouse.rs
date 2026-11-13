@@ -29,7 +29,9 @@ impl App {
                         } else if l.logs_btn.contains(pos) {
                             self.toggle_logs();
                         } else if l.tabs.contains(pos) {
-                            if let Some(t) = layout::tab_at(l.tabs, m.column) {
+                            if let Some(t) =
+                                layout::tab_at(l.tabs, m.column, TABS.iter().position(|t| *t == self.tab).unwrap_or(0))
+                            {
                                 self.set_tab(TABS[t]);
                                 self.set_focus(Focus::Content);
                             }

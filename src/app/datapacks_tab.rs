@@ -10,6 +10,42 @@ fn reload_lag() -> &'static str {
     tr!("Перезагрузка даёт короткую заминку.", "A reload causes a brief lag.")
 }
 
+thread_local! {
+    /// Поток сейчас внутри `run_guarded`.
+    static GUARDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Где случилась перехваченная паника (из хука паники).
+    static PANIC_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Для хука паники окна: паника внутри `run_guarded` будет перехвачена, поэтому терминал восстанавливать
+/// нельзя (окно продолжит работать) и печатать поверх него тоже. Запоминает место паники; `true` — перехвачена.
+pub fn guarded_panic(info: &std::panic::PanicHookInfo) -> bool {
+    if !GUARDED.with(|g| g.get()) {
+        return false;
+    }
+    PANIC_AT.with(|p| *p.borrow_mut() = info.location().map(|l| l.to_string()));
+    true
+}
+
+/// Выполняет работу фонового задания (датапаки, сброс мира), превращая панику в ошибку: иначе применяющая часть
+/// не запустится, и флаг «занято» (`datapacks.busy`, `world.resetting`) останется взведённым до перезапуска.
+pub(super) fn run_guarded<T>(work: impl FnOnce() -> T) -> anyhow::Result<T> {
+    let outer = GUARDED.with(|g| g.replace(true));
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+    GUARDED.with(|g| g.set(outer));
+    res.map_err(|p| {
+        let mut msg = p
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".into());
+        if let Some(at) = PANIC_AT.with(|p| p.borrow_mut().take()) {
+            msg = format!("{msg} ({at})");
+        }
+        anyhow::anyhow!(tr!(format!("внутренняя ошибка: {msg}"), format!("internal error: {msg}")))
+    })
+}
+
 impl App {
     /// (id сервера, папка мира) выбранного сервера.
     fn datapacks_key(&self) -> (usize, PathBuf) {
@@ -164,9 +200,13 @@ impl App {
                 );
                 return self.toast(format!("{what}{tail}"), ToastKind::Info);
             }
+            let declined = tr!(
+                "Если отказаться — изменения применятся после minecraft:reload или перезапуска.",
+                "If you decline, the change applies after minecraft:reload or a restart."
+            );
             self.popup = Some(Popup::Confirm {
                 title: tr!("Перезагрузить датапаки", "Reload datapacks").into(),
-                text: format!("{note} {}", reload_lag()),
+                text: format!("{note} {} {declined}", reload_lag()),
                 action: Action::ReloadDatapacks(id),
             });
             // Видно и после отказа (Esc): изменение ещё не применено.
@@ -347,15 +387,18 @@ impl App {
         self.datapacks.busy = Some(tr!("скачивание обновлений…", "downloading updates…").into());
         self.spawn_task(
             move || {
-                let mut done = vec![];
-                let mut errs = vec![];
-                for (d, u) in &jobs {
-                    match datapacks::apply_update(d, u, &level) {
-                        Ok(p) => done.push((p, u.version.clone())),
-                        Err(e) => errs.push(format!("{}: {e:#}", d.name)),
+                run_guarded(|| {
+                    let mut done = vec![];
+                    let mut errs = vec![];
+                    for (d, u) in &jobs {
+                        match datapacks::apply_update(d, u, &level) {
+                            Ok(p) => done.push((p, u.version.clone())),
+                            Err(e) => errs.push(format!("{}: {e:#}", d.name)),
+                        }
                     }
-                }
-                (done, errs)
+                    (done, errs)
+                })
+                .unwrap_or_else(|e| (vec![], vec![format!("{e:#}")]))
             },
             move |app, (done, errs)| {
                 app.datapacks.busy = None;
@@ -386,6 +429,30 @@ mod tests {
     use super::*;
     use crate::client::Client;
     use crate::i18n::{Lang, with_lang};
+
+    #[test]
+    fn run_guarded_turns_a_panic_into_an_error() {
+        assert_eq!(run_guarded(|| 7).unwrap(), 7);
+        with_lang(Lang::En, || {
+            let e = run_guarded(|| -> u8 { panic!("boom") }).unwrap_err();
+            assert!(format!("{e:#}").starts_with("internal error: boom"), "{e:#}");
+            let e = run_guarded(|| -> u8 { panic!("{}", String::from("fmt")) }).unwrap_err();
+            assert!(format!("{e:#}").ends_with("fmt"), "{e:#}");
+        });
+    }
+
+    /// Хук паники окна узнаёт, что паника будет перехвачена, по флагу потока — и не ломает терминал.
+    #[test]
+    fn run_guarded_marks_the_thread_for_the_panic_hook() {
+        fn inside() -> bool {
+            GUARDED.with(|g| g.get())
+        }
+        assert!(!inside());
+        assert!(run_guarded(inside).unwrap());
+        assert!(run_guarded(|| run_guarded(|| ()).map(|_| inside())).unwrap().unwrap()); // вложенный вызов
+        let _ = run_guarded(|| -> u8 { panic!("boom") });
+        assert!(!inside());
+    }
 
     #[tokio::test]
     async fn finish_datapack_job_keeps_an_open_window() {
