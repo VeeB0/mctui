@@ -13,6 +13,8 @@ mod core_update;
 mod crash;
 mod create;
 mod daemon;
+#[allow(dead_code)] // used by the Add-ons tab (tasks 3–6)
+mod datapacks;
 mod event;
 mod i18n;
 mod input;
