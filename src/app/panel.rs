@@ -36,7 +36,7 @@ pub enum PanelKind {
         target: Target,
         query: String,
         hits: Vec<SearchHit>,
-        offset: usize,
+        page: usize,
         more: bool,
     },
     LogSearch {
@@ -101,6 +101,17 @@ impl Panel {
             input_focus: false,
         }
     }
+}
+
+/// Фоновая работа поиска; в тестах не ходит в сеть.
+fn search_addons(query: &str, target: &Target, page: usize) -> anyhow::Result<ps::SearchResults> {
+    #[cfg(test)]
+    {
+        let _ = (query, target, page);
+        Ok(ps::SearchResults::default())
+    }
+    #[cfg(not(test))]
+    ps::search(query, target, page)
 }
 
 fn pad(s: &str, w: usize) -> String {
@@ -243,7 +254,7 @@ impl App {
         };
         let mut panel = Panel::new(
             title,
-            PanelKind::PluginSearch { target, query: String::new(), hits: vec![], offset: 0, more: false },
+            PanelKind::PluginSearch { target, query: String::new(), hits: vec![], page: 0, more: false },
             tr!(
                 "Enter — искать / установить · ↓ к списку · Tab — к строке поиска · n — ещё · Esc — закрыть",
                 "Enter — search / install · ↓ to the list · Tab — to the search box · n — more · Esc — close"
@@ -257,94 +268,98 @@ impl App {
             format!(
                 "{} {sources}",
                 tr!(
-                    "Введите название (пустой запрос — популярное).",
-                    "Type a name (an empty query shows popular ones)."
+                    "Сейчас — популярное. Введите название и нажмите Enter.",
+                    "Showing popular ones. Type a name and press Enter."
                 )
             ),
         )];
+        // Пустой запрос — популярное; грузится в фоне, строка ввода доступна сразу.
+        self.run_plugin_search(&mut panel, false);
         self.popup = Some(Popup::Panel(Box::new(panel)));
     }
 
     fn run_plugin_search(&mut self, p: &mut Panel, next_page: bool) {
-        let PanelKind::PluginSearch { target, query, hits, offset, .. } = &mut p.kind else { return };
+        let PanelKind::PluginSearch { target, query, hits, page, .. } = &mut p.kind else { return };
         if !next_page {
             *query = p.input.as_ref().map(|i| i.value.trim().to_string()).unwrap_or_default();
             hits.clear();
-            *offset = 0;
+            *page = 0;
             p.items.clear();
             p.sel = 0;
         } else {
-            *offset += 1; // номер страницы
+            *page += 1;
         }
-        let (q, t, off) = (query.clone(), target.clone(), *offset);
-        // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
-        let legend = if t.kind() == PluginKind::Datapack { "" } else { " · M — Modrinth, H — Hangar" };
+        let (q, t, pg) = (query.clone(), target.clone(), *page);
         p.busy = Some(tr!("ищу…", "searching…").into());
-        self.spawn_task(
-            move || ps::search(&q, &t, off),
-            move |app, res| {
-                let mut warn = None;
-                app.with_panel(|p| {
-                    p.busy = None;
-                    let PanelKind::PluginSearch { hits, more, .. } = &mut p.kind else { return };
-                    match res {
-                        Ok(r) => {
-                            for h in r.hits {
-                                if !hits.iter().any(|x| x.source == h.source && x.id == h.id) {
-                                    hits.push(h);
-                                }
-                            }
-                            *more = r.more;
-                            warn = (!r.warnings.is_empty()).then(|| r.warnings.join("; "));
-                            p.header = Some(format!(
-                                "{}{}{}{}",
-                                pad(tr!("Название", "Name"), 28),
-                                pad(tr!("Автор", "Author"), 18),
-                                pad(tr!("Скачиваний", "Downloads"), 12),
-                                tr!("Описание", "Description")
-                            ));
-                            p.items = hits
-                                .iter()
-                                .map(|h| {
-                                    format!(
-                                        "{}{}{}{}",
-                                        pad(
-                                            &format!(
-                                                "{} {}",
-                                                if h.source == ps::Source::Hangar { "H" } else { "M" },
-                                                h.title
-                                            ),
-                                            28
-                                        ),
-                                        pad(&h.author, 18),
-                                        pad(&human_count(h.downloads), 12),
-                                        h.description
-                                    )
-                                })
-                                .collect();
-                            p.lines = vec![PanelLine::new(
-                                Tone::Muted,
-                                if hits.is_empty() {
-                                    tr!("ничего не найдено", "nothing found").to_string()
-                                } else {
-                                    tr!(
-                                        format!("найдено: {}{}{legend}", hits.len(), if *more { "+" } else { "" }),
-                                        format!("found: {}{}{legend}", hits.len(), if *more { "+" } else { "" })
-                                    )
-                                },
-                            )];
-                            if !hits.is_empty() {
-                                p.input_focus = false;
-                            }
+        let q_work = q.clone();
+        self.spawn_task(move || search_addons(&q_work, &t, pg), move |app, res| app.apply_plugin_search(&q, pg, res));
+    }
+
+    /// Применяет ответ поиска. Ответ на устаревший запрос (панель уже ждёт другой) молча отбрасывается.
+    pub(crate) fn apply_plugin_search(&mut self, query: &str, page: usize, res: anyhow::Result<ps::SearchResults>) {
+        let mut warn = None;
+        self.with_panel(|p| {
+            let PanelKind::PluginSearch { target, query: cur_q, hits, page: cur_page, more } = &mut p.kind else {
+                return;
+            };
+            if cur_q != query || *cur_page != page {
+                return;
+            }
+            p.busy = None;
+            // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
+            let legend = if target.kind() == PluginKind::Datapack { "" } else { " · M — Modrinth, H — Hangar" };
+            match res {
+                Ok(r) => {
+                    for h in r.hits {
+                        if !hits.iter().any(|x| x.source == h.source && x.id == h.id) {
+                            hits.push(h);
                         }
-                        Err(e) => p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}"))],
                     }
-                });
-                if let Some(w) = warn {
-                    app.toast(w, ToastKind::Error);
+                    *more = r.more;
+                    warn = (!r.warnings.is_empty()).then(|| r.warnings.join("; "));
+                    p.header = Some(format!(
+                        "{}{}{}{}",
+                        pad(tr!("Название", "Name"), 28),
+                        pad(tr!("Автор", "Author"), 18),
+                        pad(tr!("Скачиваний", "Downloads"), 12),
+                        tr!("Описание", "Description")
+                    ));
+                    p.items = hits
+                        .iter()
+                        .map(|h| {
+                            format!(
+                                "{}{}{}{}",
+                                pad(
+                                    &format!("{} {}", if h.source == ps::Source::Hangar { "H" } else { "M" }, h.title),
+                                    28
+                                ),
+                                pad(&h.author, 18),
+                                pad(&human_count(h.downloads), 12),
+                                h.description
+                            )
+                        })
+                        .collect();
+                    p.lines = vec![PanelLine::new(
+                        Tone::Muted,
+                        if hits.is_empty() {
+                            tr!("ничего не найдено", "nothing found").to_string()
+                        } else {
+                            tr!(
+                                format!("найдено: {}{}{legend}", hits.len(), if *more { "+" } else { "" }),
+                                format!("found: {}{}{legend}", hits.len(), if *more { "+" } else { "" })
+                            )
+                        },
+                    )];
+                    if !hits.is_empty() && !query.is_empty() {
+                        p.input_focus = false;
+                    }
                 }
-            },
-        );
+                Err(e) => p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}"))],
+            }
+        });
+        if let Some(w) = warn {
+            self.toast(w, ToastKind::Error);
+        }
     }
 
     fn pick_plugin(&mut self, p: &mut Panel) {

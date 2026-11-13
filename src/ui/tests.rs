@@ -753,6 +753,67 @@ async fn datapack_search_works_without_core() {
     });
 }
 
+fn paper_search(tag: &str) -> TempServer {
+    let srv = TempServer::new(tag);
+    std::fs::write(srv.0.join("paper.jar"), b"").unwrap();
+    srv
+}
+
+fn one_hit(title: &str) -> anyhow::Result<crate::plugin_search::SearchResults> {
+    use crate::plugin_search::{SearchHit, SearchResults, Source};
+    Ok(SearchResults {
+        hits: vec![SearchHit {
+            source: Source::Modrinth,
+            id: title.into(),
+            slug: title.to_lowercase(),
+            title: title.into(),
+            description: String::new(),
+            author: "me".into(),
+            downloads: 1,
+            latest_game_version: None,
+            page: String::new(),
+        }],
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn addon_search_loads_popular_on_open() {
+    let srv = paper_search("popular-open");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert_eq!(p.busy.as_deref(), Some("searching…"));
+        assert!(p.input.as_ref().unwrap().value.is_empty());
+        assert!(p.input_focus);
+        assert!(p.lines[0].text.contains("Showing popular ones."), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_ignores_stale_popular() {
+    let srv = paper_search("popular-stale");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        for c in "chunky".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        a.apply_plugin_search("", 0, one_hit("Old"));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.items.iter().all(|r| !r.contains("Old")), "{:?}", p.items);
+        assert!(p.busy.is_some(), "новый запрос ещё идёт");
+        a.apply_plugin_search("chunky", 0, one_hit("Chunky"));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.items.iter().any(|r| r.contains("Chunky")), "{:?}", p.items);
+        assert!(p.busy.is_none());
+    });
+}
+
 #[tokio::test]
 async fn addons_help_follows_sub_tab() {
     let tab_help =
