@@ -11,8 +11,6 @@
 //! Файлы правятся построчно: комментарии, порядок ключей и остальные настройки сохраняются.
 //! Серверы и прокси должны быть остановлены (вызывающая сторона), изменения вступят в силу при запуске.
 
-#![allow(dead_code)] // used by UI integration
-
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::io::Read;
@@ -522,6 +520,7 @@ pub fn initial_config(default: &str, port: u16) -> Result<String> {
 }
 
 /// Меняет порт прокси (`bind` в velocity.toml), сохраняя адрес.
+#[cfg(test)]
 pub fn set_bind_port(proxy_dir: &Path, port: u16) -> Result<()> {
     let path = proxy_dir.join(CONFIG);
     let text = std::fs::read_to_string(&path)?;
@@ -537,6 +536,7 @@ pub fn set_bind_port(proxy_dir: &Path, port: u16) -> Result<()> {
 }
 
 /// Порт, на котором слушает прокси (`bind` в velocity.toml).
+#[cfg(test)]
 pub fn proxy_port(proxy_dir: &Path) -> Option<u16> {
     let text = std::fs::read_to_string(proxy_dir.join(CONFIG)).ok()?;
     let bind = TomlDoc::parse(&text).get(None, "bind")?;

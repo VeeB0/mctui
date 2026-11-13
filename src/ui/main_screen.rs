@@ -927,8 +927,8 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "↑↓ select · R reset Nether/End · p pregenerate · P/C pause/continue · x cancel · Enter switch world · u rescan"
         ),
         (Focus::Content, Tab::Status) => tr!(
-            "f как друзьям зайти · 1-7 вкладки · Enter ввод команды",
-            "f how friends can join · 1-7 tabs · Enter type a command"
+            "f как друзьям зайти · U обновить ядро · v сеть Velocity · 1-7 вкладки · Enter команда",
+            "f how friends join · U update core · v Velocity network · 1-7 tabs · Enter command"
         ),
         _ => tr!(
             "↑↓ сервер · a добавить · Del убрать · Tab фокус · 1-7 вкладки · f как друзьям зайти",

@@ -186,8 +186,8 @@ impl App {
         let Some(dim) = self.selected_dim() else { return };
         self.popup = Some(Popup::Edit {
             title: tr!(
-                format!("Сгенерировать {}: радиус в блоках от 0,0", dim.title()),
-                format!("Pregenerate {}: radius in blocks around 0,0", dim.title())
+                format!("Сгенерировать {}: радиус в блоках (от точки появления или 0,0)", dim.title()),
+                format!("Pregenerate {}: radius in blocks (around spawn or 0,0)", dim.title())
             ),
             input: TextInput::with("2000"),
             target: EditTarget::PregenRadius(dim),
@@ -208,7 +208,9 @@ impl App {
         let level = self.world.info.as_ref().map(|i| i.level_name.clone()).unwrap_or_else(|| "world".into());
         let w = world::chunky_world(ch.kind, &level, &dim);
         let id = self.sel().id;
-        for cmd in world::pregen_commands(&w, PregenCenter::Origin, r) {
+        // Верхний мир — вокруг точки появления, Незер и Энд — вокруг 0,0.
+        let center = if dim == Dimension::Overworld { PregenCenter::Spawn } else { PregenCenter::Origin };
+        for cmd in world::pregen_commands(&w, center, r) {
             self.send(Request::Command { id, cmd, user: false });
         }
         let n = world::pregen_chunk_count(r);
@@ -253,7 +255,6 @@ impl App {
     /// Последний ход генерации из живого лога сервера.
     pub fn pregen_progress(&self) -> Option<world::PregenProgress> {
         let s = self.sel();
-        let n = s.log.len();
-        s.log.iter().skip(n.saturating_sub(300)).filter_map(|l| world::parse_pregen_progress(&l.text)).last()
+        s.log.iter().rev().take(300).find_map(|l| world::parse_pregen_progress(&l.text))
     }
 }

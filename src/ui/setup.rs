@@ -36,7 +36,7 @@ fn choice_line(s: &Setup, field: Field, active: bool) -> Line<'static> {
         }
         Field::Core => {
             let mut v = vec![];
-            for c in Core::ALL {
+            for c in Core::WITH_PROXY {
                 v.push(opt(s.core == c, c.label()));
                 v.push(Span::raw(" "));
             }

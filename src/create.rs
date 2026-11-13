@@ -41,10 +41,10 @@ pub enum Core {
 }
 
 impl Core {
-    /// Игровые ядра (форма «Создать новый» до появления прокси в интерфейсе).
+    /// Игровые ядра без прокси.
+    #[cfg(test)]
     pub const ALL: [Core; 4] = [Core::Paper, Core::Purpur, Core::Fabric, Core::Vanilla];
     /// Игровые ядра и прокси — для формы, которая умеет создавать и Velocity.
-    #[allow(dead_code)] // used by UI integration
     pub const WITH_PROXY: [Core; 5] = [Core::Paper, Core::Purpur, Core::Fabric, Core::Vanilla, Core::Velocity];
 
     /// Прокси (Velocity): нет мира, EULA, server.properties; порт — в velocity.toml.

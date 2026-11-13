@@ -7,8 +7,6 @@
 //! 2. Журнал сессий ([`SessionLog`]) — ведёт фоновая служба по событиям входа/выхода: время онлайн
 //!    сегодня / за неделю, пик игроков по дням. Хранится в JSON, только последние [`KEEP_DAYS`] дней.
 
-#![allow(dead_code)] // used by UI integration
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -268,6 +266,7 @@ pub struct SessionLog {
 }
 
 impl SessionLog {
+    #[cfg(test)]
     /// Пустой журнал, который будет сохраняться в `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into(), ..Default::default() }
@@ -288,10 +287,6 @@ impl SessionLog {
         };
         log.path = path;
         log
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Атомарная запись (через временный файл).
@@ -350,20 +345,24 @@ impl SessionLog {
         }
     }
 
+    #[cfg(test)]
     /// Сессии игрока (ник без учёта регистра), старые первыми.
     pub fn sessions(&self, name: &str) -> Vec<Session> {
         self.sessions.iter().filter(|s| s.name.eq_ignore_ascii_case(name)).cloned().collect()
     }
 
+    #[cfg(test)]
     pub fn all_sessions(&self) -> &[Session] {
         &self.sessions
     }
 
+    #[cfg(test)]
     /// С какого момента игрок на сервере (`None` — не в игре).
     pub fn online_since(&self, name: &str) -> Option<DateTime<Utc>> {
         self.open_index(name).map(|i| self.sessions[i].started())
     }
 
+    #[cfg(test)]
     /// Кто сейчас в игре.
     pub fn online(&self) -> Vec<String> {
         self.sessions.iter().filter(|s| s.end.is_none()).map(|s| s.name.clone()).collect()

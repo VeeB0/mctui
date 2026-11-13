@@ -11,8 +11,6 @@
 //!
 //! Все функции блокирующие (обход папок мира может занять секунды) — вызывать вне UI-потока.
 
-#![allow(dead_code)] // used by UI integration
-
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -131,6 +129,7 @@ pub struct WorldInfo {
 }
 
 impl WorldInfo {
+    #[cfg(test)]
     pub fn dimension(&self, dim: &Dimension) -> Option<&DimensionInfo> {
         self.dimensions.iter().find(|d| &d.dim == dim)
     }
@@ -395,6 +394,7 @@ fn rotate_stash(stash_root: &Path) {
 }
 
 /// Отложенные сбросы, новые первыми.
+#[cfg(test)]
 pub fn reset_stashes(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(dir.join(RESET_STASH_DIR)) else { return vec![] };
     let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
@@ -418,6 +418,7 @@ pub fn validate_level_name(name: &str) -> Result<()> {
 
 /// Записать `level-name` в server.properties (остальные строки и комментарии не меняются).
 /// Новый мир (если такой папки нет) сервер создаст при следующем запуске.
+#[cfg(test)]
 pub fn set_level_name(dir: &Path, name: &str) -> Result<()> {
     validate_level_name(name)?;
     let path = dir.join("server.properties");
@@ -704,6 +705,8 @@ pub enum PregenCenter {
     Origin,
     /// Точка появления мира (`chunky spawn`).
     Spawn,
+    /// Заданная точка (пока задаётся только в тестах).
+    #[allow(dead_code)]
     At(i64, i64),
 }
 
@@ -775,6 +778,7 @@ pub fn parse_pregen_progress(line: &str) -> Option<PregenProgress> {
 }
 
 /// `[Chunky] Task stopped for world.` (пауза или отмена) → имя мира.
+#[cfg(test)]
 pub fn parse_pregen_stopped(line: &str) -> Option<String> {
     let s = crate::log::strip_codes(line);
     let i = s.find("Task stopped for ")? + "Task stopped for ".len();

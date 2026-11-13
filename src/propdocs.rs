@@ -4,8 +4,6 @@
 //! Покрывает ванильный server.properties 1.21+/26.x и несколько устаревших ключей, которые ещё
 //! встречаются в файлах серверов старых версий (pvp, spawn-monsters…).
 
-#![allow(dead_code)] // used by UI integration
-
 use crate::tr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,11 +48,6 @@ impl PropDoc {
     /// Описание на текущем языке интерфейса.
     pub fn description(&self) -> &'static str {
         tr!(self.ru, self.en)
-    }
-
-    /// Перезапуск нужен для применения (true и для `NewWorld`: новый мир тоже создаётся при старте).
-    pub fn restart_required(&self) -> bool {
-        true
     }
 }
 

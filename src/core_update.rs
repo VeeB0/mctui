@@ -14,8 +14,6 @@
 //! Файл `world/session.lock` намеренно не проверяется: на Unix его блокировка не видна другим процессам
 //! надёжно, а сервер, которым управляет mctui, и так известен как остановленный.
 
-#![allow(dead_code)] // used by UI integration
-
 use anyhow::{Context, Result, bail};
 use std::cmp::Ordering;
 use std::io::Read;

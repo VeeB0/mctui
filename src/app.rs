@@ -28,6 +28,7 @@ use tokio::sync::mpsc;
 
 pub use crate::core::human_bytes;
 
+mod maintain;
 mod panel;
 mod world_tab;
 pub use panel::{Panel, Tone};
@@ -99,6 +100,7 @@ pub enum Action {
     InstallPlugin(Box<crate::plugin_search::InstallPlan>),
     ResetDimension(crate::world::Dimension),
     SetLevel(String),
+    ApplyCore(Box<maintain::CoreTarget>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -608,6 +610,7 @@ impl App {
             Action::InstallPlugin(plan) => self.install_plugin(*plan),
             Action::ResetDimension(d) => self.reset_dimension(d),
             Action::SetLevel(name) => self.set_level(name),
+            Action::ApplyCore(t) => self.apply_core(*t),
         }
     }
 
@@ -1425,6 +1428,7 @@ impl App {
                         crate::create::Core::Paper | crate::create::Core::Purpur => {
                             vec!["world".into(), "world_nether".into(), "world_the_end".into()]
                         }
+                        crate::create::Core::Velocity => vec!["velocity.toml".into(), "plugins".into()],
                         _ => vec!["world".into()],
                     };
                     let cfg = ServerConfig::new_local(&name, created.dir, created.command, paths);
@@ -1915,7 +1919,11 @@ impl App {
                 _ => {}
             },
             Tab::World => self.world_char(c),
-            Tab::Status => {}
+            Tab::Status => match c {
+                'U' => self.open_core_update(),
+                'v' => self.open_velocity_link(),
+                _ => {}
+            },
         }
     }
 

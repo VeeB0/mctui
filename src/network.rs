@@ -4,8 +4,6 @@
 //! Только чтение и советы: роутер, UPnP и брандмауэр не трогаются.
 //! Сеть — через системный `curl` (как в `update.rs`), с жёсткими таймаутами.
 
-#![allow(dead_code)] // used by UI integration
-
 use crate::tr;
 use anyhow::{Context, Result, bail};
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};

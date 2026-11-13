@@ -112,6 +112,9 @@ pub struct Setup {
 const LOCAL_FIELDS: [Field; 3] = [Field::Kind, Field::Path, Field::Name];
 const NEW_FIELDS: [Field; 8] =
     [Field::Kind, Field::Core, Field::Version, Field::Path, Field::Name, Field::Memory, Field::GamePort, Field::Eula];
+/// Прокси Velocity: без EULA (это не сервер Minecraft).
+const PROXY_FIELDS: [Field; 7] =
+    [Field::Kind, Field::Core, Field::Version, Field::Path, Field::Name, Field::Memory, Field::GamePort];
 const RCON_FIELDS: [Field; 5] = [Field::Kind, Field::Name, Field::Host, Field::Port, Field::Password];
 
 fn default_memory_mb() -> u32 {
@@ -189,6 +192,7 @@ impl Setup {
     pub fn fields(&self) -> &'static [Field] {
         match self.kind {
             SetupKind::Local => &LOCAL_FIELDS,
+            SetupKind::New if self.core.is_proxy() => &PROXY_FIELDS,
             SetupKind::New => &NEW_FIELDS,
             SetupKind::Rcon => &RCON_FIELDS,
         }
@@ -272,6 +276,21 @@ impl Setup {
         }
     }
 
+    /// Прокси и игровой сервер по умолчанию отличаются портом и памятью: меняем, если пользователь их не трогал.
+    fn swap_proxy_defaults(&mut self) {
+        let (port, mem) = if self.core.is_proxy() {
+            (("25565", "25577"), (format!("{}M", default_memory_mb()), "512M".to_string()))
+        } else {
+            (("25577", "25565"), ("512M".to_string(), format!("{}M", default_memory_mb())))
+        };
+        if self.game_port.value.trim() == port.0 {
+            self.game_port.set(port.1);
+        }
+        if self.memory.value.trim() == mem.0 {
+            self.memory.set(&mem.1);
+        }
+    }
+
     fn set_kind(&mut self, k: SetupKind) {
         let prev = self.kind;
         self.kind = k;
@@ -307,10 +326,14 @@ impl Setup {
                 self.set_kind(all[(i + d).rem_euclid(all.len() as isize) as usize]);
             }
             Field::Core => {
-                let all = Core::ALL;
+                let all = Core::WITH_PROXY;
                 let i = all.iter().position(|k| *k == self.core).unwrap_or(0) as isize;
+                let was_proxy = self.core.is_proxy();
                 self.core = all[(i + d).rem_euclid(all.len() as isize) as usize];
                 self.version_sel = 0;
+                if was_proxy != self.core.is_proxy() {
+                    self.swap_proxy_defaults();
+                }
                 self.update_new_defaults();
             }
             Field::Version => {
@@ -408,7 +431,7 @@ impl Setup {
             .ok()
             .filter(|p| *p > 0)
             .ok_or_else(|| tr!("Порт — число от 1 до 65535", "Port must be a number from 1 to 65535"))?;
-        if !self.eula {
+        if !self.eula && !self.core.is_proxy() {
             return Err(tr!(
                 "Нужно принять EULA Minecraft (поле EULA → пробел)",
                 "You need to accept the Minecraft EULA (EULA field → Space)"

@@ -32,6 +32,8 @@ pub enum PanelKind {
     PluginSearch { target: Target, query: String, hits: Vec<SearchHit>, offset: usize, more: bool },
     LogSearch { query: String, matches: Vec<crate::crash::LogMatch> },
     Players,
+    CoreUpdate { installed: Option<crate::core_update::Installed>, targets: Vec<String> },
+    Velocity { backends: Vec<crate::velocity::Backend>, chosen: Vec<bool> },
 }
 
 pub struct Panel {
@@ -51,7 +53,7 @@ pub struct Panel {
 }
 
 impl Panel {
-    fn new(title: String, kind: PanelKind, hint: String) -> Self {
+    pub(super) fn new(title: String, kind: PanelKind, hint: String) -> Self {
         Self {
             title,
             kind,
@@ -100,7 +102,7 @@ fn ago(t: SystemTime) -> String {
 
 impl App {
     /// Изменить открытую панель (если её ещё не закрыли).
-    fn with_panel(&mut self, f: impl FnOnce(&mut Panel)) {
+    pub(super) fn with_panel(&mut self, f: impl FnOnce(&mut Panel)) {
         if let Some(Popup::Panel(p)) = &mut self.popup {
             f(p);
         }
@@ -602,6 +604,8 @@ impl App {
             KeyCode::Char('/') if p.input.is_some() => p.input_focus = true,
             KeyCode::Enter => match &p.kind {
                 PanelKind::PluginSearch { .. } => self.pick_plugin(&mut p),
+                PanelKind::CoreUpdate { .. } if p.busy.is_none() => self.pick_core_target(&mut p),
+                PanelKind::Velocity { .. } if p.busy.is_none() && !p.items.is_empty() => self.link_velocity(&mut p),
                 PanelKind::LogSearch { query, matches } => {
                     if let Some(m) = matches.get(p.sel) {
                         let (q, m) = (query.clone(), m.clone());
@@ -630,6 +634,7 @@ impl App {
                     }
                 }
                 ('n', PanelKind::PluginSearch { more: true, .. }) => self.run_plugin_search(&mut p, true),
+                (' ', PanelKind::Velocity { .. }) => self.toggle_velocity_backend(&mut p),
                 _ => {}
             },
             _ => {}

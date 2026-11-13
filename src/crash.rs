@@ -4,8 +4,6 @@
 //! Поиск ограничен числом совпадений, файлов и прочитанных байт и может быть отменён флагом,
 //! поэтому огромная папка логов не подвесит интерфейс (вызывать в `spawn_blocking`).
 
-#![allow(dead_code)] // used by UI integration
-
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
@@ -31,6 +29,7 @@ pub struct CrashReport {
 }
 
 impl CrashReport {
+    #[cfg(test)]
     pub fn file_name(&self) -> String {
         self.path.file_name().unwrap_or_default().to_string_lossy().into_owned()
     }
@@ -170,6 +169,7 @@ pub struct SearchResult {
 }
 
 /// Файлы для поиска в папке сервера: latest.log, затем архивы и отчёты о падениях — новые первыми.
+#[cfg(test)]
 pub fn search_files(dir: &Path) -> Vec<PathBuf> {
     search_files_in(&dir.join("logs"), &dir.join("crash-reports"))
 }
@@ -200,6 +200,7 @@ pub fn search_files_in(logs_dir: &Path, crash_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Поиск подстроки по всем логам папки сервера. Короткая форма для типичного вызова.
+#[cfg(test)]
 pub fn search_logs(dir: &Path, query: &str, case_insensitive: bool, limit: usize) -> SearchResult {
     search_logs_with(&search_files(dir), query, &SearchOpts { case_insensitive, limit, ..Default::default() })
 }

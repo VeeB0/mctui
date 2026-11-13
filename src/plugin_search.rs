@@ -8,9 +8,6 @@
 //! Все функции блокирующие (системный `curl`, как в `plugins.rs`): вызывать через `spawn_blocking`.
 //! Установленное начинает работать только после перезапуска сервера.
 
-// Публичный API подключается интерфейсом отдельно.
-#![allow(dead_code)] // used by UI integration
-
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
@@ -48,17 +45,6 @@ pub enum Platform {
 }
 
 impl Platform {
-    pub const ALL: [Platform; 8] = [
-        Platform::Paper,
-        Platform::Purpur,
-        Platform::Folia,
-        Platform::Spigot,
-        Platform::Fabric,
-        Platform::Quilt,
-        Platform::Forge,
-        Platform::NeoForge,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Platform::Paper => "Paper",
@@ -256,15 +242,6 @@ fn newest_game_version<'a>(vs: impl IntoIterator<Item = &'a String>) -> Option<S
 pub enum Source {
     Modrinth,
     Hangar,
-}
-
-impl Source {
-    pub fn label(self) -> &'static str {
-        match self {
-            Source::Modrinth => "Modrinth",
-            Source::Hangar => "Hangar",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
