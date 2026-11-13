@@ -117,6 +117,9 @@ fn d_backup_paths() -> Vec<String> {
 fn d_backup_dir() -> String {
     "backups".into()
 }
+/// Авто-бэкап у новых локальных серверов, часов.
+pub const NEW_SERVER_BACKUP_EVERY_HOURS: u32 = 6;
+
 fn d_backup_keep() -> usize {
     10
 }
@@ -154,8 +157,16 @@ impl ServerConfig {
         }
     }
 
+    /// Новый локальный сервер (создание или добавление в mctui): сразу с авто-бэкапом
+    /// [`NEW_SERVER_BACKUP_EVERY_HOURS`]. Старые записи в servers.toml без поля остаются без него.
     pub fn new_local(name: &str, dir: PathBuf, command: Vec<String>, backup_paths: Vec<String>) -> Self {
-        Self { dir: Some(dir), command, backup_paths, ..Self::base(name, Kind::Local) }
+        Self {
+            dir: Some(dir),
+            command,
+            backup_paths,
+            backup_every_hours: NEW_SERVER_BACKUP_EVERY_HOURS,
+            ..Self::base(name, Kind::Local)
+        }
     }
 
     pub fn new_rcon(name: &str, host: &str, port: u16, password: &str) -> Self {

@@ -30,6 +30,9 @@ impl App {
                 _ => {}
             }
         }
+        if k.code == KeyCode::F(1) {
+            return self.open_help();
+        }
         if !self.has_server() {
             if matches!(k.code, KeyCode::Char(c) if latin(c) == 'q') || k.code == KeyCode::Esc {
                 self.should_quit = true;
@@ -86,6 +89,7 @@ impl App {
                 _ => self.popup = Some(Popup::Quit { running }),
             },
             Popup::Panel(p) => self.panel_key(p, k),
+            Popup::Help { scroll } => self.help_key(scroll, k),
             Popup::Edit { title, mut input, target } => match k.code {
                 KeyCode::Enter => {
                     let v = input.value.clone();
@@ -159,6 +163,8 @@ impl App {
                 let c = latin(c);
                 match c {
                     'l' | 'L' => return self.toggle_logs(),
+                    // `,` — та же клавиша, что `?`, в русской раскладке.
+                    '?' | ',' => return self.open_help(),
                     '1'..='7' => {
                         self.focus = Focus::Content;
                         return self.set_tab(TABS[c as usize - '1' as usize]);
@@ -358,9 +364,22 @@ impl App {
                 'd' => {
                     if let Some(b) = self.backups.get(self.backups_sel) {
                         let name = b.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        let warn = if self.backups.len() == 1 {
+                            tr!(
+                                "\n⚠ Это единственный бэкап сервера — после удаления откатиться будет не на что.",
+                                "\n⚠ This is the server's only backup — nothing will be left to roll back to."
+                            )
+                        } else if self.backups_sel == 0 {
+                            tr!("\nЭто самый свежий бэкап.", "\nThis is the most recent backup.")
+                        } else {
+                            ""
+                        };
                         self.popup = Some(Popup::Confirm {
                             title: tr!("Удалить бэкап", "Delete backup").into(),
-                            text: tr!(format!("Удалить {name} безвозвратно?"), format!("Delete {name} permanently?")),
+                            text: tr!(
+                                format!("Удалить {name} безвозвратно?{warn}"),
+                                format!("Delete {name} permanently?{warn}")
+                            ),
                             action: Action::DeleteBackup(b.path.clone()),
                         });
                     }
@@ -371,12 +390,13 @@ impl App {
                         let s = self.sel();
                         let paths = s.cfg.backup_paths.join(", ");
                         let running = if s.running() {
+                            let online = players_note(&s.players).map(|n| format!(" {n}")).unwrap_or_default();
                             tr!(
-                                " Сервер будет остановлен и запущен снова.",
-                                " The server will be stopped and started again."
+                                format!(" Сервер будет остановлен и запущен снова.{online}"),
+                                format!(" The server will be stopped and started again.{online}")
                             )
                         } else {
-                            ""
+                            String::new()
                         };
                         self.popup = Some(Popup::Confirm {
                             title: tr!("Восстановить из бэкапа", "Restore from backup").into(),

@@ -103,6 +103,14 @@ impl App {
             let s = match old.remove(&v.id) {
                 Some(mut s) => {
                     let props_changed = s.view.cfg.dir != v.cfg.dir || s.view.needs_restart != v.needs_restart;
+                    // Новый бэкап, другая папка или имя — свежесть бэкапов пересчитать.
+                    if s.view.last_backup != v.last_backup
+                        || s.view.cfg.backup_dir != v.cfg.backup_dir
+                        || s.view.cfg.name != v.cfg.name
+                        || s.view.cfg.dir != v.cfg.dir
+                    {
+                        s.forget_backup_age();
+                    }
                     s.view = v;
                     if props_changed {
                         s.reload_props();
@@ -113,6 +121,7 @@ impl App {
             };
             self.servers.push(s);
         }
+        self.scan_backup_ages();
         let first = !self.got_state;
         self.got_state = true;
         // Выбор: только что добавленный сервер, иначе прежний.

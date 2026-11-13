@@ -272,6 +272,7 @@ impl App {
             KeyCode::Right => self.logs.hscroll = self.logs.hscroll.saturating_add(10),
             KeyCode::Char(c) => match latin(c) {
                 'l' | 'L' | 'q' => self.screen = Screen::Main,
+                '?' | ',' => self.open_help(),
                 '/' | '.' => self.logs.search_input = Some(TextInput::with(self.logs.search.as_deref().unwrap_or(""))),
                 'n' => self.jump_to_match(-1),
                 'N' => self.jump_to_match(1),

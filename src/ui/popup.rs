@@ -16,6 +16,7 @@ pub fn draw(app: &App, f: &mut Frame) {
     let Some(p) = &app.popup else { return };
     match p {
         Popup::Panel(panel) => super::panel::draw(panel, f),
+        Popup::Help { scroll } => draw_help(app, f, *scroll),
         Popup::Confirm { title, text, .. } => {
             // Высота — по тексту (с переносами), чтобы длинные подтверждения не обрезались.
             let w: u16 = 76;
@@ -37,18 +38,26 @@ pub fn draw(app: &App, f: &mut Frame) {
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(b), r);
         }
         Popup::Quit { running } => {
-            let r = centered(f.area(), 66, 9);
+            let online: usize = app.servers.iter().filter(|s| s.running()).map(|s| s.players.len()).sum();
+            let r = centered(f.area(), 66, 9 + u16::from(online > 0));
             f.render_widget(Clear, r);
             let b =
                 Block::bordered().title(crate::tr!(" Выход ", " Quit ")).border_style(Style::new().fg(theme::ACCENT));
             let key = |k: &'static str| Span::styled(k, Style::new().fg(theme::BUTTON_FG).bg(theme::BUTTON_BG).bold());
-            let lines = vec![
-                Line::raw(crate::tr!(
-                    format!("Запущено серверов: {running}. Они работают в фоновой службе и не зависят от окна."),
-                    format!(
-                        "Servers running: {running}. They run in the background service, independent of this window."
-                    )
-                )),
+            let mut lines = vec![Line::raw(crate::tr!(
+                format!("Запущено серверов: {running}. Они работают в фоновой службе и не зависят от окна."),
+                format!("Servers running: {running}. They run in the background service, independent of this window.")
+            ))];
+            if online > 0 {
+                lines.push(Line::styled(
+                    crate::tr!(
+                        format!("Игроков онлайн: {online} — «s» их отключит."),
+                        format!("Players online: {online} — “s” disconnects them.")
+                    ),
+                    Style::new().fg(theme::WARN),
+                ));
+            }
+            lines.extend([
                 Line::raw(""),
                 Line::from(vec![
                     key(" Enter "),
@@ -65,7 +74,7 @@ pub fn draw(app: &App, f: &mut Frame) {
                     Span::styled("  Esc  ", Style::new().fg(theme::TEXT).bg(theme::HIGHLIGHT_BG)),
                     Span::raw(crate::tr!(" отмена", " cancel")),
                 ]),
-            ];
+            ]);
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(b), r);
         }
         Popup::Edit { title, input, target } => {
@@ -98,4 +107,39 @@ pub fn draw(app: &App, f: &mut Frame) {
             f.set_cursor_position((inner.x + cur - scroll, inner.y));
         }
     }
+}
+
+/// Ширина колонки клавиш в справке.
+const HELP_KEY_W: usize = 17;
+
+fn draw_help(app: &App, f: &mut Frame, scroll: u16) {
+    let mut lines: Vec<Line> = vec![];
+    for (i, sec) in app.help_sections().into_iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::styled(sec.title, Style::new().fg(theme::ACCENT).bold()));
+        for (k, d) in sec.keys {
+            let pad = HELP_KEY_W.saturating_sub(k.chars().count());
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {k}{}", " ".repeat(pad)), Style::new().fg(theme::WARN).bold()),
+                Span::styled(d, Style::new().fg(theme::TEXT)),
+            ]));
+        }
+    }
+    let r = centered(f.area(), 84, lines.len() as u16 + 2);
+    let inner_h = r.height.saturating_sub(2);
+    let max_scroll = (lines.len() as u16).saturating_sub(inner_h);
+    let scroll = scroll.min(max_scroll);
+    let footer = if max_scroll > 0 {
+        crate::tr!(" ↑↓ PgUp PgDn прокрутка · Esc закрыть ", " ↑↓ PgUp PgDn scroll · Esc close ")
+    } else {
+        crate::tr!(" Esc закрыть ", " Esc close ")
+    };
+    f.render_widget(Clear, r);
+    let b = Block::bordered()
+        .title(crate::tr!(" Клавиши ", " Keys "))
+        .title_bottom(Line::styled(footer, Style::new().fg(theme::MUTED)))
+        .border_style(Style::new().fg(theme::ACCENT));
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(b), r);
 }

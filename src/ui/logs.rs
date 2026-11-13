@@ -148,13 +148,13 @@ pub fn draw(app: &App, f: &mut Frame) {
     }
     let hints = if matches!(app.logs.active_source(), Some(LogSource::Chat)) {
         tr!(
-            " Esc/L назад · Enter/m написать в чат · ↑↓ PgUp PgDn прокрутка · / поиск · Tab источники",
-            " Esc/L back · Enter/m write to chat · ↑↓ PgUp PgDn scroll · / search · Tab sources"
+            " Esc/L назад · ? справка · Enter/m написать в чат · ↑↓ PgUp PgDn прокрутка · / поиск · Tab источники",
+            " Esc/L back · ? help · Enter/m write to chat · ↑↓ PgUp PgDn scroll · / search · Tab sources"
         )
     } else {
         tr!(
-            " Esc/L назад · ↑↓ PgUp PgDn прокрутка · g/G начало/конец · ←→ по горизонтали · / поиск · F по всем логам · n/N выше/ниже · f фильтр · c чат · Tab источники · r обновить",
-            " Esc/L back · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · F all logs · n/N prev/next · f filter · c chat · Tab sources · r reload"
+            " Esc/L назад · ? справка · ↑↓ PgUp PgDn прокрутка · g/G начало/конец · ←→ по горизонтали · / поиск · F по всем логам · n/N выше/ниже · f фильтр · c чат · Tab источники · r обновить",
+            " Esc/L back · ? help · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · F all logs · n/N prev/next · f filter · c chat · Tab sources · r reload"
         )
     };
     f.render_widget(Paragraph::new(hints).fg(theme::TEXT), l.hints);

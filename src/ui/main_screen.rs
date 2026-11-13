@@ -2,7 +2,9 @@
 
 use super::layout;
 use super::theme;
-use crate::app::{App, Focus, ServerUi, TABS, Tab, ToastKind, WorldRow, human_bytes, human_duration};
+use crate::app::{
+    App, BackupHealth, Focus, ServerUi, TABS, Tab, ToastKind, WorldRow, ago, human_bytes, human_duration,
+};
 use crate::config::Kind;
 use crate::plugins::PluginKind;
 use crate::proto::RconView;
@@ -322,8 +324,8 @@ fn status_rows(s: &ServerUi) -> Vec<Row<'static>> {
         }
         if let Some(p) = &s.backup_progress {
             rows.push(kv(tr!("Бэкап", "Backup"), p.clone(), theme::WARN));
-        } else if let Some(b) = &s.last_backup {
-            rows.push(kv(tr!("Последний бэкап", "Last backup"), b.clone(), theme::TEXT));
+        } else {
+            rows.extend(backup_row(s));
         }
         if s.needs_restart {
             rows.push(kv(
@@ -334,6 +336,31 @@ fn status_rows(s: &ServerUi) -> Vec<Row<'static>> {
         }
     }
     rows
+}
+
+/// Строка «Последний бэкап» / «Бэкапы»: когда был последний, нет ли их вовсе.
+fn backup_row(s: &ServerUi) -> Option<Row<'static>> {
+    let last = tr!("Последний бэкап", "Last backup");
+    let detail = s.last_backup.as_ref().map(|b| format!(" · {b}")).unwrap_or_default();
+    Some(match s.backup_health(std::time::SystemTime::now()) {
+        BackupHealth::Unknown => kv(last, s.last_backup.clone()?, theme::TEXT),
+        BackupHealth::Missing { auto: false } => kv(
+            tr!("⚠ Бэкапы", "⚠ Backups"),
+            tr!("ни одного, авто-бэкап выкл · Ctrl+B", "none, auto backup off · Ctrl+B"),
+            theme::ERROR,
+        ),
+        BackupHealth::Missing { auto: true } => kv(
+            tr!("Бэкапы", "Backups"),
+            tr!("пока ни одного · Ctrl+B — сделать сейчас", "none yet · Ctrl+B to make one now"),
+            theme::WARN,
+        ),
+        BackupHealth::Fresh { age } => kv(last, format!("{}{detail}", ago(age)), theme::TEXT),
+        BackupHealth::Stale { age } => kv(
+            tr!("⚠ Последний бэкап", "⚠ Last backup"),
+            tr!(format!("{}, авто-бэкап выкл", ago(age)), format!("{}, auto backup off", ago(age))),
+            theme::WARN,
+        ),
+    })
 }
 
 /// Подпись промежутка графика: «за 2ч 13м».
@@ -950,8 +977,8 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
         Span::styled(format!(" {tab_keys} "), Style::new().fg(theme::TEXT)),
         Span::styled(
             tr!(
-                "│ ^S старт ^X стоп ^R рестарт ^B бэкап ^L логи ^Q выход",
-                "│ ^S start ^X stop ^R restart ^B backup ^L logs ^Q quit"
+                "│ ? справка ^S старт ^X стоп ^R рестарт ^B бэкап ^L логи ^Q выход",
+                "│ ? help ^S start ^X stop ^R restart ^B backup ^L logs ^Q quit"
             ),
             Style::new().fg(theme::MUTED),
         ),

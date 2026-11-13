@@ -190,3 +190,75 @@ async fn no_servers_yet() {
         check("no_servers_en", &render(&a, 100, 28));
     });
 }
+
+#[tokio::test]
+async fn help_popup() {
+    with_lang(Lang::Ru, || {
+        let mut a = app(vec![local_running()]);
+        key(&mut a, '2');
+        key(&mut a, '?');
+        assert!(matches!(a.popup, Some(Popup::Help { scroll: 0 })));
+        check("help_players_ru", &render(&a, 100, 40));
+        a.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(a.popup.is_none());
+        // `,` — клавиша `?` в русской раскладке; F1 открывает справку откуда угодно.
+        key(&mut a, ',');
+        assert!(matches!(a.popup, Some(Popup::Help { .. })));
+        key(&mut a, '?');
+        assert!(a.popup.is_none());
+        // В строке команды `?` — обычный символ.
+        key(&mut a, ':');
+        key(&mut a, '?');
+        assert!(a.popup.is_none());
+        assert_eq!(a.input.value, "?");
+        a.on_key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(matches!(a.popup, Some(Popup::Help { .. })));
+    });
+}
+
+#[tokio::test]
+async fn help_on_small_screen_scrolls() {
+    with_lang(Lang::En, || {
+        let mut a = app(vec![local_running()]);
+        key(&mut a, 'L');
+        key(&mut a, '?');
+        for _ in 0..100 {
+            a.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        // Прокрутка дальше конца не уезжает в пустоту: последний раздел виден.
+        check("help_logs_scrolled_en", &render(&a, 80, 24));
+    });
+}
+
+#[tokio::test]
+async fn status_without_backups() {
+    with_lang(Lang::En, || {
+        let mut a = app(vec![local_running()]);
+        a.servers[0].view.cfg.backup_every_hours = 0;
+        a.servers[0].view.last_backup = None;
+        a.servers[0].newest_backup = Some(None);
+        check("status_no_backups_en", &render(&a, 120, 34));
+    });
+}
+
+#[tokio::test]
+async fn stop_asks_only_when_players_online() {
+    let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    with_lang(Lang::Ru, || {
+        let mut a = app(vec![local_running()]);
+        a.on_key(ctrl('x'));
+        let Some(Popup::Confirm { text, action: Action::Stop { id: 0, restart: false }, .. }) = &a.popup else {
+            panic!("ждали подтверждение остановки");
+        };
+        assert!(text.contains("2 игрока: Alex, Steve"), "{text}");
+        check("stop_with_players_ru", &render(&a, 100, 28));
+        a.popup = None;
+        a.on_key(ctrl('r'));
+        assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::Stop { restart: true, .. }, .. })));
+        a.popup = None;
+
+        a.servers[0].view.players.clear();
+        a.on_key(ctrl('x'));
+        assert!(a.popup.is_none(), "пустой сервер останавливается без вопросов");
+    });
+}

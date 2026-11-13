@@ -27,4 +27,4 @@
 ┌ Command → Lobby (not running) ───────────────────────────────────────────────────────────────────────────────────────┐
 │Enter or : — type a command (no /)                                                                                    │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- ↑↓ server · a add · Del remove · Tab focus · 1-7 tabs · f how friends join │ ^S start ^X stop ^R restart ^B backup ^L l
+ ↑↓ server · a add · Del remove · Tab focus · 1-7 tabs · f how friends join │ ? help ^S start ^X stop ^R restart ^B back

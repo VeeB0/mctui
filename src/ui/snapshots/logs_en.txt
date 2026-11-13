@@ -17,4 +17,4 @@
 │                            ││                                                                                        │
 └────────────────────────────┘└────────────────────────────────────────────────────────────────────────────────────────┘
  lines: 5 · filter: all · ▼ following the end
- Esc/L back · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · F all logs · n/N prev/next · f filter · c c
+ Esc/L back · ? help · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · F all logs · n/N prev/next · f fil

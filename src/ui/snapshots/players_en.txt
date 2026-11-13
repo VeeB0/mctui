@@ -27,4 +27,4 @@
 ┌ Command → Survival ──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │Enter or : — type a command (no /)                                                                                    │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- ↑↓ select · k kick · b ban · o/d op/deop · w whitelist · s statistics │ ^S start ^X stop ^R restart ^B backup ^L logs ^
+ ↑↓ select · k kick · b ban · o/d op/deop · w whitelist · s statistics │ ? help ^S start ^X stop ^R restart ^B backup ^L

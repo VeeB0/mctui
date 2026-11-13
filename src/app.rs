@@ -29,7 +29,9 @@ use tokio::sync::mpsc;
 pub use crate::core::human_bytes;
 
 mod access_tab;
+mod backup_health;
 mod events;
+mod help;
 mod keys;
 mod logs_screen;
 mod maintain;
@@ -40,6 +42,7 @@ mod settings_tab;
 mod setup_flow;
 mod tools;
 mod world_tab;
+pub use backup_health::{BackupHealth, ago};
 pub use logs_screen::{LevelFilter, LogSource, LogsView};
 pub use panel::{Panel, Tone};
 pub use world_tab::{WorldRow, WorldView};
@@ -98,6 +101,7 @@ pub enum ToastKind {
 }
 
 pub enum Action {
+    Stop { id: usize, restart: bool },
     Kill(usize),
     RemoteStop(usize),
     Command { id: usize, cmd: String },
@@ -171,6 +175,10 @@ pub enum Popup {
         running: usize,
     },
     Panel(Box<Panel>),
+    /// Справка по клавишам (`?` / `F1`); `scroll` — сдвиг в строках.
+    Help {
+        scroll: u16,
+    },
 }
 
 /// Сервер глазами окна: снимок от службы + то, что окно держит само.
@@ -180,6 +188,12 @@ pub struct ServerUi {
     pub history: VecDeque<Sample>,
     pub props: Option<Properties>,
     pub props_error: Option<String>,
+    /// Время самого свежего бэкапа в `backup_dir`: `None` — ещё не считали, `Some(None)` — бэкапов нет.
+    pub newest_backup: Option<Option<SystemTime>>,
+    /// Подсчёт `newest_backup` уже идёт в фоне.
+    backup_scan: bool,
+    /// Растёт при каждом сбросе `newest_backup`: ответ устаревшего подсчёта отбрасывается.
+    backup_gen: u32,
 }
 
 impl std::ops::Deref for ServerUi {
@@ -191,8 +205,16 @@ impl std::ops::Deref for ServerUi {
 
 impl ServerUi {
     fn new(view: ServerView) -> Self {
-        let mut s =
-            Self { view, log: LogBuffer::new(10_000), history: VecDeque::new(), props: None, props_error: None };
+        let mut s = Self {
+            view,
+            log: LogBuffer::new(10_000),
+            history: VecDeque::new(),
+            props: None,
+            props_error: None,
+            newest_backup: None,
+            backup_scan: false,
+            backup_gen: 0,
+        };
         s.reload_props();
         s
     }
@@ -437,12 +459,13 @@ impl App {
         }
         let s = self.sel();
         let id = s.id;
+        let online = players_note(&s.players).map(|n| format!("{n}\n")).unwrap_or_default();
         if s.cfg.kind == Kind::Rcon && !restart {
             self.popup = Some(Popup::Confirm {
                 title: tr!("Остановка", "Stop").into(),
                 text: tr!(
-                    format!("Отправить stop на удалённый сервер «{}»?", s.cfg.name),
-                    format!("Send stop to the remote server “{}”?", s.cfg.name)
+                    format!("{online}Отправить stop на удалённый сервер «{}»?", s.cfg.name),
+                    format!("{online}Send stop to the remote server “{}”?", s.cfg.name)
                 ),
                 action: Action::RemoteStop(id),
             });
@@ -453,15 +476,48 @@ impl App {
                 title: tr!("Принудительно", "Force").into(),
                 text: tr!(
                     format!(
-                        "«{}» уже останавливается. Убить процесс (kill -9)? Несохранённые данные пропадут.",
+                        "{online}«{}» уже останавливается. Убить процесс (kill -9)? Несохранённые данные пропадут.",
                         s.cfg.name
                     ),
                     format!(
-                        "“{}” is already stopping. Kill the process (kill -9)? Unsaved data will be lost.",
+                        "{online}“{}” is already stopping. Kill the process (kill -9)? Unsaved data will be lost.",
                         s.cfg.name
                     )
                 ),
                 action: Action::Kill(id),
+            });
+            return;
+        }
+        // Игроки онлайн — их отключит: переспросить. Пустой сервер останавливается сразу.
+        if s.running() && !s.players.is_empty() && s.status != Status::Stopping {
+            let name = &s.cfg.name;
+            let (title, question) = if restart {
+                (
+                    tr!("Перезапуск", "Restart"),
+                    tr!(
+                        format!("Перезапустить «{name}»? Игроков отключит, через минуту-две они смогут зайти снова."),
+                        format!("Restart “{name}”? Players are disconnected and can rejoin in a minute or two.")
+                    ),
+                )
+            } else {
+                (
+                    tr!("Остановка", "Stop"),
+                    tr!(
+                        format!("Остановить «{name}»? Игроков отключит."),
+                        format!("Stop “{name}”? Players are disconnected.")
+                    ),
+                )
+            };
+            self.popup = Some(Popup::Confirm {
+                title: title.into(),
+                text: format!(
+                    "{online}{question}{}",
+                    tr!(
+                        "\nПредупредить их можно в строке команды: say …",
+                        "\nYou can warn them first from the command line: say …"
+                    )
+                ),
+                action: Action::Stop { id, restart },
             });
             return;
         }
@@ -620,6 +676,7 @@ impl App {
 
     fn run_action(&mut self, a: Action) {
         match a {
+            Action::Stop { id, restart } => self.send(Request::Stop { id, restart }),
             Action::Kill(id) => self.send(Request::Kill { id }),
             Action::RemoteStop(id) => self.send(Request::Stop { id, restart: false }),
             Action::Command { id, cmd } => self.send(Request::Command { id, cmd, user: false }),
@@ -710,9 +767,14 @@ impl App {
             return;
         }
         let s = self.sel();
+        let local = s.is_local();
         self.backups =
-            if s.is_local() { backup::list(&s.cfg.backup_dir(), &backup::file_prefix(&s.cfg.name)) } else { vec![] };
+            if local { backup::list(&s.cfg.backup_dir(), &backup::file_prefix(&s.cfg.name)) } else { vec![] };
         self.backups_sel = self.backups_sel.min(self.backups.len().saturating_sub(1));
+        if local {
+            let newest = backup_health::newest_of(&self.backups);
+            self.sel_mut().newest_backup = Some(newest);
+        }
     }
 
     // ───────────────────────────── выбор сервера и вкладок ─────────────────────────────
@@ -755,6 +817,28 @@ impl App {
     }
 }
 
+/// «Сейчас на сервере 2 игрока: Alex, Steve.» — для подтверждений; `None`, если никого.
+pub fn players_note(players: &[String]) -> Option<String> {
+    const SHOWN: usize = 5;
+    let n = players.len();
+    if n == 0 {
+        return None;
+    }
+    let mut names = players.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    if n > SHOWN {
+        names += &tr!(format!(" и ещё {}", n - SHOWN), format!(" and {} more", n - SHOWN));
+    }
+    let word = match (n % 10, n % 100) {
+        (1, r) if r != 11 => "игрок",
+        (2..=4, r) if !(12..=14).contains(&r) => "игрока",
+        _ => "игроков",
+    };
+    Some(tr!(
+        format!("Сейчас на сервере {n} {word}: {names}."),
+        if n == 1 { format!("1 player is online: {names}.") } else { format!("{n} players are online: {names}.") }
+    ))
+}
+
 pub fn human_duration(d: Duration) -> String {
     let s = d.as_secs();
     let (h, m, sec) = (s / 3600, s / 60 % 60, s % 60);
@@ -778,6 +862,25 @@ mod tests {
         assert_eq!(latin('л'), 'k');
         assert_eq!(latin('l'), 'l');
         assert_eq!(latin('1'), '1');
+    }
+
+    #[test]
+    fn players_note_text() {
+        use crate::i18n::{Lang, with_lang};
+        let p = |n: usize| (1..=n).map(|i| format!("P{i}")).collect::<Vec<_>>();
+        assert_eq!(players_note(&[]), None);
+        with_lang(Lang::Ru, || {
+            assert_eq!(players_note(&p(1)).unwrap(), "Сейчас на сервере 1 игрок: P1.");
+            assert_eq!(players_note(&p(3)).unwrap(), "Сейчас на сервере 3 игрока: P1, P2, P3.");
+            assert_eq!(players_note(&p(7)).unwrap(), "Сейчас на сервере 7 игроков: P1, P2, P3, P4, P5 и ещё 2.");
+            assert!(players_note(&p(11)).unwrap().contains("11 игроков"));
+            assert!(players_note(&p(21)).unwrap().contains("21 игрок:"));
+            assert!(players_note(&p(12)).unwrap().contains("12 игроков"));
+        });
+        with_lang(Lang::En, || {
+            assert_eq!(players_note(&p(1)).unwrap(), "1 player is online: P1.");
+            assert_eq!(players_note(&p(2)).unwrap(), "2 players are online: P1, P2.");
+        });
     }
 
     #[test]

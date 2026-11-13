@@ -1,0 +1,24 @@
+ Logs │ Survival ● running                                          Esc · Back
+┌┌ Keys ──────────────────────────────────────────────────────────────────────┐┐
+││  Tab / Shift+Tab  focus: servers → tab → command                           ││
+││  1–7 / ←→         tabs                                                     ││
+││  Enter / :        type a server command                                    ││
+││  a                add a server (in the server list)                        ││
+││  Del              remove the server from mctui (files stay)                ││
+││  L                logs, chat, crash reports                                ││
+││  f                how friends join                                         ││
+││                                                                            ││
+││Everywhere                                                                  ││
+││  Ctrl+S           start the server                                         ││
+││  Ctrl+X           stop (again — kill)                                      ││
+││  Ctrl+R           restart                                                  ││
+││  Ctrl+B           backup now                                               ││
+││  Ctrl+L           logs                                                     ││
+││  Ctrl+U           update mctui                                             ││
+││  ? / F1           this help                                                ││
+││  Ctrl+Q           quit (servers keep running)                              ││
+││                                                                            ││
+││Tip                                                                         ││
+└│  Layout           hotkeys also work in the Russian layout                  │┘
+ └ ↑↓ PgUp PgDn scroll · Esc close ───────────────────────────────────────────┘
+ Esc/L back · ? help · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / sea
