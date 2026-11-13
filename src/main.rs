@@ -1,6 +1,8 @@
 mod app;
 mod backup;
 mod config;
+#[allow(dead_code)] // подключается к интерфейсу отдельно
+mod create;
 mod event;
 #[allow(dead_code)] // используется по мере перевода интерфейса
 mod i18n;
