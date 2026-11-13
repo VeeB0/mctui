@@ -107,15 +107,27 @@ pub enum ToastKind {
 }
 
 pub enum Action {
-    Stop { id: usize, restart: bool },
+    Stop {
+        id: usize,
+        restart: bool,
+    },
     Kill(usize),
     RemoteStop(usize),
-    Command { id: usize, cmd: String },
+    Command {
+        id: usize,
+        cmd: String,
+    },
     DeleteBackup(PathBuf),
-    Restore { id: usize, path: PathBuf },
+    Restore {
+        id: usize,
+        path: PathBuf,
+    },
     EnableRcon,
     RemoveServer(usize),
-    AccessRemove { list: List, name: String },
+    AccessRemove {
+        list: List,
+        name: String,
+    },
     ApplyUpdates(Vec<PathBuf>),
     ReloadDatapacks(usize),
     // `datapack enable "file/<имя>"` на сервере `id`: пак выключен в игре командой `/datapack`.
@@ -124,6 +136,8 @@ pub enum Action {
     ApplyDatapackUpdates(Vec<PathBuf>),
     InstallPlugin(Box<crate::plugin_search::InstallPlan>),
     ResetDimension(crate::world::Dimension),
+    /// Второй шаг сброса верхнего мира: спросить имя мира.
+    AskOverworldName,
     SetLevel(String),
     ApplyCore(Box<maintain::CoreTarget>),
     SelfUpdate(String),
@@ -167,7 +181,13 @@ pub enum EditTarget {
     Chat,
     LogSearch,
     PregenRadius(crate::world::Dimension),
-    JvmMemory { xms_equal: bool },
+    /// Подтверждение сброса верхнего мира: нужно ввести имя мира (`level`).
+    ResetOverworld {
+        level: String,
+    },
+    JvmMemory {
+        xms_equal: bool,
+    },
 }
 
 pub enum Popup {
@@ -797,6 +817,7 @@ impl App {
             Action::ApplyDatapackUpdates(paths) => self.apply_datapack_updates(paths),
             Action::InstallPlugin(plan) => self.install_plugin(*plan),
             Action::ResetDimension(d) => self.reset_dimension(d),
+            Action::AskOverworldName => self.ask_overworld_name(),
             Action::SetLevel(name) => self.set_level(name),
             Action::ApplyCore(t) => self.apply_core(*t),
             Action::SelfUpdate(v) => self.run_self_update(v),

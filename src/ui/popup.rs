@@ -80,7 +80,9 @@ pub fn draw(app: &App, f: &mut Frame) {
         Popup::Edit { title, input, target } => {
             let r = centered(f.area(), 70, 6);
             f.render_widget(Clear, r);
-            let b = Block::bordered().title(format!(" {title} ")).border_style(Style::new().fg(theme::ACCENT));
+            let danger = matches!(target, crate::app::EditTarget::ResetOverworld { .. });
+            let border = if danger { theme::WARN } else { theme::ACCENT };
+            let b = Block::bordered().title(format!(" {title} ")).border_style(Style::new().fg(border));
             let inner = b.inner(r);
             let lines = vec![
                 Line::from(vec![Span::styled("› ", Style::new().fg(theme::ACCENT)), Span::raw(input.value.clone())]),
@@ -95,6 +97,9 @@ pub fn draw(app: &App, f: &mut Frame) {
                         }
                         crate::app::EditTarget::Chat => {
                             crate::tr!("Enter — отправить · Esc — отмена", "Enter — send · Esc — cancel")
+                        }
+                        crate::app::EditTarget::ResetOverworld { .. } => {
+                            crate::tr!("Enter — пересоздать · Esc — отмена", "Enter — recreate · Esc — cancel")
                         }
                         _ => crate::tr!("Enter — сохранить · Esc — отмена", "Enter — save · Esc — cancel"),
                     },

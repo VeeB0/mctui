@@ -1085,8 +1085,8 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "↑↓ select · n new · r restore · d delete · u refresh"
         ),
         (Focus::Content, Tab::World) => tr!(
-            "↑↓ выбор · R сбросить Незер/Энд · p сгенерировать чанки · P/C пауза/продолжить · x отменить · Enter сменить мир · u обновить",
-            "↑↓ select · R reset Nether/End · p pregenerate · P/C pause/continue · x cancel · Enter switch world · u rescan"
+            "↑↓ выбор · R сбросить измерение · p сгенерировать чанки · P/C пауза/продолжить · x отменить · Enter сменить мир · u обновить",
+            "↑↓ select · R reset a dimension · p pregenerate · P/C pause/continue · x cancel · Enter switch world · u rescan"
         ),
         (Focus::Content, Tab::Status) => tr!(
             "f как друзьям зайти · U обновить ядро · T тестовая копия · J Java и память · v сеть Velocity · Enter команда",

@@ -1115,3 +1115,67 @@ async fn cached_vanilla_verdict_does_not_block_detected_core() {
         assert!(matches!(a.popup, Some(Popup::Panel(_))), "поиск открывается, ядро Paper определено заново");
     });
 }
+
+/// Вкладка «Мир» с уже прочитанным миром (без ожидания фонового обхода).
+fn open_world(a: &mut App, srv: &TempServer) {
+    key(a, '7');
+    press(a, KeyCode::Down);
+    a.world.info = Some(crate::world::scan(&srv.0, "world"));
+    a.world.sel = 0;
+}
+
+#[tokio::test]
+async fn overworld_reset_needs_confirm_and_world_name() {
+    let srv = TempServer::new("reset-overworld");
+    for f in ["level.dat", "region/r.0.0.mca", "playerdata/a.dat"] {
+        let p = srv.level().join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b"x").unwrap();
+    }
+    with_lang(Lang::En, || {
+        // Сервер запущен — даже не спрашиваем.
+        let mut a = app(vec![srv.view(Some(&[]))]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("Stop the server first"), "{}", toast_text(&a));
+
+        let mut a = app(vec![srv.view(None)]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        let Some(Popup::Confirm { text, action: Action::AskOverworldName, .. }) = &a.popup else {
+            panic!("expected the Overworld warning")
+        };
+        assert!(text.contains("same seed") && text.contains(".pechka-before-reset/"), "{text}");
+        // Esc — отмена.
+        press(&mut a, KeyCode::Esc);
+        assert!(a.popup.is_none());
+        // Enter в предупреждении ведёт ко вводу имени, неверное имя ничего не трогает.
+        key(&mut a, 'R');
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.popup, Some(Popup::Edit { target: crate::app::EditTarget::ResetOverworld { .. }, .. })));
+        for c in "wrld".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("did not match"), "{}", toast_text(&a));
+        // Верное имя — ландшафт уходит в копию, игроки остаются.
+        key(&mut a, 'R');
+        press(&mut a, KeyCode::Enter);
+        for c in "world".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while srv.level().join("region").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!srv.level().join("region").exists());
+    assert!(srv.level().join("playerdata/a.dat").exists());
+    assert!(srv.level().join("level.dat").exists());
+    let stash = crate::world::reset_stashes(&srv.0);
+    assert_eq!(stash.len(), 1);
+    assert!(stash[0].join("world/region/r.0.0.mca").exists());
+}

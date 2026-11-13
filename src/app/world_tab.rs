@@ -1,4 +1,4 @@
-//! Вкладка «Мир»: измерения и их размер, сброс Незера/Энда, смена мира (`level-name`),
+//! Вкладка «Мир»: измерения и их размер, сброс измерений, смена мира (`level-name`),
 //! предварительная генерация чанков через Chunky.
 
 use super::*;
@@ -111,13 +111,19 @@ impl App {
         let Some(dim) = self.selected_dim() else { return };
         if !dim.resettable() {
             return self.toast(
-                tr!("Сбросить можно только Незер или Энд", "Only the Nether or the End can be reset"),
+                tr!(
+                    "Сбросить можно верхний мир, Незер или Энд",
+                    "Only the Overworld, the Nether or the End can be reset"
+                ),
                 ToastKind::Info,
             );
         }
         if self.sel().running() {
             return self
                 .toast(tr!("Сначала остановите сервер (Ctrl+X)", "Stop the server first (Ctrl+X)"), ToastKind::Info);
+        }
+        if dim == Dimension::Overworld {
+            return self.ask_reset_overworld();
         }
         let t = dim.title();
         self.popup = Some(Popup::Confirm {
@@ -136,9 +142,64 @@ impl App {
         });
     }
 
+    fn level_name(&self) -> String {
+        self.world.info.as_ref().map(|i| i.level_name.clone()).unwrap_or_else(|| "world".into())
+    }
+
+    /// Верхний мир — главное, что есть на сервере: сначала предупреждение, затем нужно ввести имя мира.
+    fn ask_reset_overworld(&mut self) {
+        let level = self.level_name();
+        let stash = world::RESET_STASH_DIR;
+        self.popup = Some(Popup::Confirm {
+            title: tr!("Пересоздать верхний мир", "Recreate the Overworld").into(),
+            text: tr!(
+                format!(
+                    "Пересоздать верхний мир «{level}»? Постройки и все изменения ландшафта пропадут: при следующем запуске \
+                     он сгенерируется заново с тем же сидом. Игроки и их вещи, Незер и Энд останутся. Старый ландшафт \
+                     не удаляется, а переносится в {stash}/. Дальше нужно будет ввести имя мира."
+                ),
+                format!(
+                    "Recreate the Overworld of “{level}”? Builds and all terrain changes are lost: it is generated anew \
+                     with the same seed on the next start. Players and their items, the Nether and the End stay. The old \
+                     terrain is not deleted but moved to {stash}/. Next you will type the world name."
+                )
+            ),
+            action: Action::AskOverworldName,
+        });
+    }
+
+    pub(super) fn ask_overworld_name(&mut self) {
+        let level = self.level_name();
+        self.popup = Some(Popup::Edit {
+            title: tr!(
+                format!("Для подтверждения введите имя мира: {level}"),
+                format!("To confirm, type the world name: {level}")
+            ),
+            input: TextInput::default(),
+            target: EditTarget::ResetOverworld { level },
+        });
+    }
+
+    pub(super) fn confirm_reset_overworld(&mut self, level: &str, typed: &str) {
+        if typed.trim() != level {
+            return self.toast(
+                tr!(
+                    "Имя мира не совпало — верхний мир не тронут",
+                    "The world name did not match — the Overworld is untouched"
+                ),
+                ToastKind::Info,
+            );
+        }
+        if self.sel().running() {
+            return self
+                .toast(tr!("Сначала остановите сервер (Ctrl+X)", "Stop the server first (Ctrl+X)"), ToastKind::Info);
+        }
+        self.reset_dimension(Dimension::Overworld);
+    }
+
     pub(super) fn reset_dimension(&mut self, dim: Dimension) {
         let dir = self.sel().cfg.dir().to_path_buf();
-        let level = self.world.info.as_ref().map(|i| i.level_name.clone()).unwrap_or_else(|| "world".into());
+        let level = self.level_name();
         self.spawn_task(
             move || world::reset_dimension(&dir, &level, dim),
             |app, res| {

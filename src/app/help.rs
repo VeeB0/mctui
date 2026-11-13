@@ -97,7 +97,13 @@ fn tab_keys(tab: Tab, sub: AddonsSub) -> Vec<(&'static str, &'static str)> {
         ],
         Tab::World => vec![
             ("Enter", tr!("сменить основной мир / генерация чанков", "switch the main world / pregenerate")),
-            ("R", tr!("сбросить Незер или Энд", "reset the Nether or the End")),
+            (
+                "R",
+                tr!(
+                    "сбросить измерение (верхний мир — с вводом имени)",
+                    "reset a dimension (the Overworld asks for the world name)"
+                ),
+            ),
             ("p", tr!("сгенерировать чанки (Chunky)", "pregenerate chunks (Chunky)")),
             ("P / C", tr!("пауза / продолжить генерацию", "pause / continue pregeneration")),
             ("x", tr!("отменить генерацию", "cancel pregeneration")),

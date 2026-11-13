@@ -1,4 +1,4 @@
-//! Миры сервера: измерения, размер на диске, сброс Незера / Энда, смена `level-name`,
+//! Миры сервера: измерения, размер на диске, сброс измерений, смена `level-name`,
 //! прегенерация через Chunky.
 //!
 //! Три раскладки папок мира:
@@ -50,9 +50,9 @@ impl Dimension {
         }
     }
 
-    /// Можно ли сбросить измерение (верхний мир — никогда).
+    /// Можно ли сбросить измерение: верхний мир, Незер и Энд (измерения модов — нет).
     pub fn resettable(&self) -> bool {
-        matches!(self, Dimension::Nether | Dimension::End)
+        !matches!(self, Dimension::Custom(_))
     }
 
     /// `the_nether` / `the_end` — имя папки в раскладке Modern.
@@ -307,9 +307,17 @@ fn count_regions(region: &Path) -> usize {
 /// Папки, в которых лежат данные измерения при любой раскладке (то, что переносится при сбросе).
 fn reset_candidates(dir: &Path, level_name: &str, dim: &Dimension) -> Vec<PathBuf> {
     let level = dir.join(level_name);
+    let terrain = |base: PathBuf| TERRAIN.map(|d| base.join(d));
     let mut out = vec![];
+    // 26.x: рядом с ландшафтом в папке измерения лежат data/ (сид генерации, правила игры, граница мира,
+    // погода) и paper-world.yml — они остаются, переносится только ландшафт.
     if let Some(m) = dim.modern_dir() {
-        out.push(level.join("dimensions/minecraft").join(m));
+        out.extend(terrain(level.join("dimensions/minecraft").join(m)));
+    }
+    if *dim == Dimension::Overworld {
+        // Старый верхний мир лежит прямо в <level>: level.dat (сид, правила), игроки, data/, датапаки и
+        // вложенные Незер / Энд остаются.
+        out.extend(terrain(level.clone()));
     }
     if let (Some(b), Some(l)) = (bukkit_dir(dir, level_name, dim), dim.legacy_dir()) {
         out.push(b.join(l));
@@ -320,10 +328,14 @@ fn reset_candidates(dir: &Path, level_name: &str, dim: &Dimension) -> Vec<PathBu
     out
 }
 
-/// Сброс Незера или Энда (сервер должен быть остановлен — это обеспечивает вызывающий): папки измерения
-/// не удаляются, а переносятся в `<dir>/.pechka-before-reset/<время>/…` с сохранением относительного пути
-/// (хранятся последние 3 сброса). Файлы настроек измерения (`paper-world.yml`) возвращаются на место.
-/// При следующем запуске сервер создаст измерение заново с тем же сидом. Возвращает папку копии.
+/// Папки ландшафта измерения.
+const TERRAIN: [&str; 3] = ["region", "entities", "poi"];
+
+/// Сброс измерения (сервер должен быть остановлен — это обеспечивает вызывающий): ландшафт (`region`,
+/// `entities`, `poi`; у старых Незера / Энда — вся папка `DIM-1` / `DIM1`) не удаляется, а переносится в
+/// `<dir>/.pechka-before-reset/<время>/…` с сохранением относительного пути (хранятся последние 3 сброса).
+/// Сид, правила игры, игроки и настройки измерения остаются. При следующем запуске сервер создаст ландшафт
+/// заново с тем же сидом. Возвращает папку копии.
 pub fn reset_dimension(dir: &Path, level_name: &str, dim: Dimension) -> Result<PathBuf> {
     if !dim.resettable() {
         bail!(crate::tr!(
@@ -933,11 +945,13 @@ mod tests {
         // modern
         file(&d.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"), 5);
         file(&d.join("world/dimensions/minecraft/the_nether/paper-world.yml"), 3);
+        file(&d.join("world/dimensions/minecraft/the_nether/data/minecraft/world_gen_settings.dat"), 1);
         let st = reset_dimension(&d, "world", Dimension::Nether).unwrap();
         assert!(st.starts_with(d.join(RESET_STASH_DIR)));
         assert!(st.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca").exists());
         assert!(!d.join("world/dimensions/minecraft/the_nether/region").exists());
         assert!(d.join("world/dimensions/minecraft/the_nether/paper-world.yml").exists()); // настройки на месте
+        assert!(d.join("world/dimensions/minecraft/the_nether/data/minecraft/world_gen_settings.dat").exists());
         // bukkit
         file(&d.join("world_the_end/level.dat"), 1);
         file(&d.join("world_the_end/DIM1/region/r.0.0.mca"), 5);
@@ -957,12 +971,60 @@ mod tests {
         assert_eq!(stashes.len(), 3);
         assert_eq!(stashes[0], last);
         assert!(!st.exists());
-        // нечего сбрасывать (остались только настройки) / верхний мир нельзя
+        // нечего сбрасывать (остались только настройки; ландшафта верхнего мира нет)
         assert!(reset_dimension(&d, "world", Dimension::Nether).is_err());
         assert!(reset_dimension(&d, "world", Dimension::End).is_err());
         assert!(reset_dimension(&d, "world", Dimension::Overworld).is_err());
         assert!(reset_dimension(&d, "../x", Dimension::Nether).is_err());
         assert!(d.join("world/level.dat").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn overworld_reset_moves_only_terrain() {
+        let d = tmp("reset-overworld");
+        // vanilla / bukkit: ландшафт прямо в <level>
+        for f in ["level.dat", "region/r.0.0.mca", "entities/r.0.0.mca", "poi/r.0.0.mca", "playerdata/a.dat"] {
+            file(&d.join("world").join(f), 2);
+        }
+        file(&d.join("world/data/raids.dat"), 1);
+        file(&d.join("world/datapacks/p.zip"), 1);
+        file(&d.join("world/DIM-1/region/r.0.0.mca"), 3);
+        file(&d.join("world_the_end/DIM1/region/r.0.0.mca"), 3);
+        let st = reset_dimension(&d, "world", Dimension::Overworld).unwrap();
+        for f in ["region/r.0.0.mca", "entities/r.0.0.mca", "poi/r.0.0.mca"] {
+            assert!(st.join("world").join(f).exists(), "{f}");
+            assert!(!d.join("world").join(f).exists(), "{f}");
+        }
+        for f in ["level.dat", "playerdata/a.dat", "data/raids.dat", "datapacks/p.zip", "DIM-1/region/r.0.0.mca"] {
+            assert!(d.join("world").join(f).exists(), "{f}");
+        }
+        assert!(d.join("world_the_end/DIM1/region/r.0.0.mca").exists());
+        // повторно — уже нечего
+        assert!(reset_dimension(&d, "world", Dimension::Overworld).is_err());
+        // modern: только ландшафт; сид, правила и настройки Paper остаются в папке измерения
+        let ow = d.join("world/dimensions/minecraft/overworld");
+        for f in ["region/r.0.0.mca", "entities/r.0.0.mca", "poi/r.0.0.mca"] {
+            file(&ow.join(f), 5);
+        }
+        file(&ow.join("paper-world.yml"), 1);
+        file(&ow.join("data/minecraft/world_gen_settings.dat"), 1);
+        file(&ow.join("data/minecraft/game_rules.dat"), 1);
+        file(&d.join("world/players/data/a.dat"), 1);
+        let st2 = reset_dimension(&d, "world", Dimension::Overworld).unwrap();
+        for f in ["region/r.0.0.mca", "entities/r.0.0.mca", "poi/r.0.0.mca"] {
+            assert!(st2.join("world/dimensions/minecraft/overworld").join(f).exists(), "{f}");
+            assert!(!ow.join(f).exists(), "{f}");
+        }
+        for f in ["paper-world.yml", "data/minecraft/world_gen_settings.dat", "data/minecraft/game_rules.dat"] {
+            assert!(ow.join(f).exists(), "{f}");
+        }
+        assert!(d.join("world/players/data/a.dat").exists());
+        assert!(d.join("world/level.dat").exists());
+        // измерения модов не сбрасываются
+        file(&d.join("world/dimensions/mod/sky/region/r.0.0.mca"), 1);
+        assert!(reset_dimension(&d, "world", Dimension::Custom("mod:sky".into())).is_err());
+        assert!(d.join("world/dimensions/mod/sky/region/r.0.0.mca").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
