@@ -1308,7 +1308,7 @@ impl Manager {
 }
 
 /// Свободное место на диске, где лежит `dir` (самая длинная подходящая точка монтирования).
-fn disk_free(disks: &sysinfo::Disks, dir: &std::path::Path) -> Option<u64> {
+pub(crate) fn disk_free(disks: &sysinfo::Disks, dir: &std::path::Path) -> Option<u64> {
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     disks
         .iter()
