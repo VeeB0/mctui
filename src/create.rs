@@ -605,12 +605,16 @@ pub fn parse_java_major(output: &str) -> Option<u32> {
 }
 
 pub(crate) fn java_major(java: &Path) -> Option<u32> {
+    parse_java_major(&java_version_text(java)?)
+}
+
+/// Вывод `java -version` (stderr и stdout), если программа запустилась и завершилась успешно.
+pub(crate) fn java_version_text(java: &Path) -> Option<String> {
     let out = Command::new(java).arg("-version").stdin(Stdio::null()).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let text = format!("{}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
-    parse_java_major(&text)
+    Some(format!("{}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout)))
 }
 
 /// Ищет программу в PATH.
@@ -621,6 +625,12 @@ pub(crate) fn which(name: &str) -> Option<PathBuf> {
 
 /// Версия системной `java` из PATH, если она есть.
 pub(crate) fn system_java_major() -> Option<u32> {
+    system_java()?;
+    java_major(Path::new("java"))
+}
+
+/// Системная `java` из PATH (без заглушки macOS, которая предлагает установить Java).
+pub(crate) fn system_java() -> Option<PathBuf> {
     let path = which("java")?;
     // В macOS /usr/bin/java — заглушка: без установленной JDK она открывает окно «установите Java».
     if cfg!(target_os = "macos") && path == Path::new("/usr/bin/java") {
@@ -634,7 +644,7 @@ pub(crate) fn system_java_major() -> Option<u32> {
             return None;
         }
     }
-    java_major(Path::new("java"))
+    Some(path)
 }
 
 fn adoptium_os() -> Option<&'static str> {
