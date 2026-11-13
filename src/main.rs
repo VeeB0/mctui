@@ -407,11 +407,14 @@ async fn tui(cfg_path: PathBuf, default_config: bool) -> i32 {
     let res = run(&mut terminal, cfg_path, default_config).await;
     restore_terminal();
     match res {
-        Ok(msg) => {
+        Ok((msg, reexec)) => {
             if let Some(m) = msg {
                 println!("{m}");
             }
-            0
+            match reexec {
+                Some(exe) => reopen(&exe),
+                None => 0,
+            }
         }
         Err(e) => {
             eprintln!("mctui: {e:#}");
@@ -422,6 +425,12 @@ async fn tui(cfg_path: PathBuf, default_config: bool) -> i32 {
 
 /// Фоновая проверка новой версии на GitHub (раз за запуск, тихо при ошибках).
 fn check_update(tx: tokio::sync::mpsc::UnboundedSender<event::AppEvent>) {
+    // Только для отладочных сборок: проверить обновление из окна, не выпуская релиз.
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("MCTUI_TEST_UPDATE") {
+        let _ = tx.send(event::AppEvent::UpdateAvailable(v));
+        return;
+    }
     if update::REPO.starts_with("__") || std::env::var_os("MCTUI_NO_UPDATE_CHECK").is_some() {
         return;
     }
@@ -438,7 +447,7 @@ async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cfg_path: PathBuf,
     default_config: bool,
-) -> Result<Option<String>> {
+) -> Result<(Option<String>, Option<PathBuf>)> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     check_update(tx.clone());
     let client = client::start(cfg_path.clone(), default_config, tx.clone());
@@ -473,5 +482,26 @@ async fn run(
             break;
         }
     }
-    Ok(app.exit_message.take())
+    Ok((app.exit_message.take(), app.reexec.take()))
+}
+
+/// После обновления из окна: открыть окно заново уже новой версией, с теми же аргументами.
+fn reopen(exe: &std::path::Path) -> i32 {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(std::env::args_os().skip(1));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = cmd.exec();
+        eprintln!("mctui: {e} — {}", tr!("откройте mctui заново", "open mctui again"));
+        1
+    }
+    #[cfg(not(unix))]
+    match cmd.status() {
+        Ok(st) => st.code().unwrap_or(0),
+        Err(e) => {
+            eprintln!("mctui: {e} — {}", tr!("откройте mctui заново", "open mctui again"));
+            1
+        }
+    }
 }

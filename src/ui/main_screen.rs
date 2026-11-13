@@ -121,12 +121,23 @@ fn draw_header(app: &App, f: &mut Frame, area: Rect, btn: Rect) {
             )
         })
     } else {
-        app.update_available.as_ref().map(|v| (format!(" ⬆ v{v}: mctui update "), theme::WARN))
+        app.update_available.as_ref().map(|v| {
+            let text = if app.updating {
+                tr!(format!(" ⬆ v{v}: обновляю… "), format!(" ⬆ v{v}: updating… "))
+            } else {
+                tr!(format!(" ⬆ v{v}: Ctrl+U — обновить "), format!(" ⬆ v{v}: Ctrl+U to update "))
+            };
+            (text, theme::WARN)
+        })
     };
+    app.update_badge.set(Rect::default());
     if let Some((badge, color)) = badge {
         let w = badge.chars().count() as u16;
         if right > area.x + lw + w + 10 {
             right -= w + 1;
+            if !app.daemon_outdated {
+                app.update_badge.set(Rect { x: right, width: w, ..area });
+            }
             f.render_widget(
                 Paragraph::new(Span::styled(badge, Style::new().fg(color).bold())),
                 Rect { x: right, width: w, ..area },

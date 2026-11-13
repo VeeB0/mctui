@@ -116,21 +116,105 @@ fn old_path(exe: &Path) -> PathBuf {
     exe.with_file_name(format!("{}.old", exe.file_name().unwrap_or_default().to_string_lossy()))
 }
 
-/// `mctui update`: скачивает свежую сборку, проверяет SHA-256 и подменяет текущий бинарник.
+/// Как установлен mctui — от этого зависит способ обновления.
+pub enum Install {
+    /// Через Homebrew: обновляет `brew upgrade`.
+    Homebrew,
+    /// Обычный файл: скачиваем сборку и подменяем его.
+    Direct(PathBuf),
+}
+
+pub fn install_kind() -> Result<Install> {
+    let exe = self_path()?;
+    Ok(if exe.components().any(|c| c.as_os_str() == "Cellar") { Install::Homebrew } else { Install::Direct(exe) })
+}
+
+fn brew() -> PathBuf {
+    ["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "/home/linuxbrew/.linuxbrew/bin/brew"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("brew"))
+}
+
+/// `brew upgrade` для формулы mctui; вывод brew не печатается, в ошибке — его последние строки.
+pub fn brew_upgrade() -> Result<()> {
+    // Tap VeeB0/homebrew-mctui → формула VeeB0/mctui/mctui.
+    let formula = format!("{REPO}/mctui");
+    let out = Command::new(brew())
+        .args(["upgrade", &formula])
+        .output()
+        .context(crate::tr!("не удалось запустить brew", "could not run brew"))?;
+    if !out.status.success() {
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).rev().take(3).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        bail!("brew upgrade: {}", tail.join(" / "));
+    }
+    Ok(())
+}
+
+/// Скачивает сборку `version`, проверяет SHA-256 и подменяет `exe`.
+pub fn apply(exe: &Path, version: &str) -> Result<()> {
+    let asset = asset_name()
+        .context(crate::tr!("для этой платформы нет готовых сборок", "no prebuilt binaries for this platform"))?;
+    let dir = exe.parent().context("exe dir")?;
+    let new = dir.join(format!(".mctui-update-{}", std::process::id()));
+    let sum = dir.join(format!(".mctui-update-{}.sha256", std::process::id()));
+    let base = format!("https://github.com/{REPO}/releases/download/v{version}");
+    let res = (|| {
+        download(&format!("{base}/{asset}"), &new)?;
+        download(&format!("{base}/{asset}.sha256"), &sum)?;
+        let expected = std::fs::read_to_string(&sum)?.split_whitespace().next().unwrap_or("").to_lowercase();
+        let actual = sha256_hex(&std::fs::read(&new)?);
+        if expected != actual {
+            bail!(
+                "{}",
+                crate::tr!(
+                    format!("контрольная сумма не совпала (ожидалось {expected}, получено {actual})"),
+                    format!("checksum mismatch (expected {expected}, got {actual})")
+                )
+            );
+        }
+        replace_self(exe, &new)
+    })();
+    let _ = std::fs::remove_file(&new);
+    let _ = std::fs::remove_file(&sum);
+    res
+}
+
+/// Обновление из окна: возвращает путь к новому бинарнику (для перезапуска окна).
+pub fn update_to(version: &str) -> Result<PathBuf> {
+    match install_kind()? {
+        Install::Homebrew => {
+            brew_upgrade()?;
+            // Симлинк bin/mctui после upgrade указывает на новую версию.
+            let link = brew().with_file_name("mctui");
+            Ok(if link.exists() { link } else { std::env::current_exe()? })
+        }
+        Install::Direct(exe) => {
+            apply(&exe, version)?;
+            Ok(exe)
+        }
+    }
+}
+
 /// `mctui update`. Возвращает true, если программа заменена.
 pub fn run_cli(force: bool) -> Result<bool> {
-    let exe = self_path()?;
-    if exe.components().any(|c| c.as_os_str() == "Cellar") {
-        println!(
-            "{}",
-            crate::tr!(
-                "mctui установлен через Homebrew — обновление: brew upgrade mctui",
-                "mctui was installed with Homebrew — update with: brew upgrade mctui"
-            )
-        );
-        return Ok(false);
-    }
-    let asset = asset_name()
+    let exe = match install_kind()? {
+        Install::Homebrew => {
+            println!(
+                "{}",
+                crate::tr!(
+                    "mctui установлен через Homebrew — обновление: brew upgrade mctui",
+                    "mctui was installed with Homebrew — update with: brew upgrade mctui"
+                )
+            );
+            return Ok(false);
+        }
+        Install::Direct(exe) => exe,
+    };
+    asset_name()
         .context(crate::tr!("для этой платформы нет готовых сборок", "no prebuilt binaries for this platform"))?;
     println!(
         "{}",
@@ -151,29 +235,7 @@ pub fn run_cli(force: bool) -> Result<bool> {
         return Ok(false);
     }
     println!("{}", crate::tr!(format!("Скачиваю {latest}…"), format!("Downloading {latest}…")));
-    let dir = exe.parent().context("exe dir")?;
-    let new = dir.join(format!(".mctui-update-{}", std::process::id()));
-    let sum = dir.join(format!(".mctui-update-{}.sha256", std::process::id()));
-    let base = format!("https://github.com/{REPO}/releases/download/v{latest}");
-    let res = (|| {
-        download(&format!("{base}/{asset}"), &new)?;
-        download(&format!("{base}/{asset}.sha256"), &sum)?;
-        let expected = std::fs::read_to_string(&sum)?.split_whitespace().next().unwrap_or("").to_lowercase();
-        let actual = sha256_hex(&std::fs::read(&new)?);
-        if expected != actual {
-            bail!(
-                "{}",
-                crate::tr!(
-                    format!("контрольная сумма не совпала (ожидалось {expected}, получено {actual})"),
-                    format!("checksum mismatch (expected {expected}, got {actual})")
-                )
-            );
-        }
-        replace_self(&exe, &new)
-    })();
-    let _ = std::fs::remove_file(&new);
-    let _ = std::fs::remove_file(&sum);
-    res?;
+    apply(&exe, &latest)?;
     let cfg = crate::config::default_path();
     println!(
         "{}",

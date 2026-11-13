@@ -101,6 +101,7 @@ pub enum Action {
     ResetDimension(crate::world::Dimension),
     SetLevel(String),
     ApplyCore(Box<maintain::CoreTarget>),
+    SelfUpdate(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,6 +343,12 @@ pub struct App {
     pub config_path: PathBuf,
     /// Новая версия на GitHub, если есть.
     pub update_available: Option<String>,
+    /// Где нарисован значок обновления (для клика).
+    pub update_badge: Cell<Rect>,
+    /// Идёт обновление mctui из окна.
+    pub updating: bool,
+    /// После выхода запустить окно заново из этого файла (обновлённая версия).
+    pub reexec: Option<PathBuf>,
     pub language: Option<String>,
     /// Связь со службой установлена и пришёл первый снимок.
     pub connected: bool,
@@ -420,6 +427,9 @@ impl App {
             setup: None,
             config_path,
             update_available: None,
+            update_badge: Cell::new(Rect::default()),
+            updating: false,
+            reexec: None,
             language,
             connected: false,
             got_state: false,
@@ -592,6 +602,81 @@ impl App {
         }
     }
 
+    /// Ctrl+U / клик по значку: предложить обновить mctui.
+    pub fn self_update(&mut self) {
+        if self.updating {
+            return self.toast(tr!("обновление уже идёт…", "already updating…"), ToastKind::Info);
+        }
+        let Some(v) = self.update_available.clone() else {
+            return self.toast(
+                tr!(
+                    format!("установлена последняя версия ({})", crate::update::VERSION),
+                    format!("you have the latest version ({})", crate::update::VERSION)
+                ),
+                ToastKind::Info,
+            );
+        };
+        let how = match crate::update::install_kind() {
+            Ok(crate::update::Install::Homebrew) => {
+                tr!("через Homebrew (brew upgrade)", "with Homebrew (brew upgrade)").to_string()
+            }
+            _ => tr!(
+                "скачав сборку с GitHub и проверив её контрольную сумму",
+                "by downloading the build from GitHub and checking its checksum"
+            )
+            .to_string(),
+        };
+        let servers = if self.daemon_can_detach {
+            tr!(
+                "Серверы продолжат работать: служба перезапустится на новой версии без их остановки.",
+                "Servers keep running: the service restarts on the new version without stopping them."
+            )
+        } else {
+            tr!(
+                "Служба старой версии перезапустится, когда не будет запущенных серверов.",
+                "The old service restarts once no servers are running."
+            )
+        };
+        self.popup = Some(Popup::Confirm {
+            title: tr!("Обновление mctui", "Update mctui").into(),
+            text: tr!(
+                format!(
+                    "Обновить mctui {} → {v} {how}? Настройки сохранятся. {servers} Окно откроется заново.",
+                    crate::update::VERSION
+                ),
+                format!(
+                    "Update mctui {} → {v} {how}? Settings are kept. {servers} The window reopens.",
+                    crate::update::VERSION
+                )
+            ),
+            action: Action::SelfUpdate(v),
+        });
+    }
+
+    fn run_self_update(&mut self, v: String) {
+        self.updating = true;
+        self.toast(tr!(format!("обновляю mctui до {v}…"), format!("updating mctui to {v}…")), ToastKind::Info);
+        self.spawn_task(
+            move || crate::update::update_to(&v).map(|p| (p, v)),
+            |app, res| {
+                app.updating = false;
+                match res {
+                    Ok((path, v)) => {
+                        // Новое окно увидит службу старой версии и само перезапустит её (без остановки серверов).
+                        app.reexec = Some(path);
+                        app.exit_message =
+                            Some(tr!(format!("mctui обновлён до {v}."), format!("mctui updated to {v}.")));
+                        app.should_quit = true;
+                    }
+                    Err(e) => app.toast(
+                        tr!(format!("обновление не удалось: {e:#}"), format!("update failed: {e:#}")),
+                        ToastKind::Error,
+                    ),
+                }
+            },
+        );
+    }
+
     fn run_action(&mut self, a: Action) {
         match a {
             Action::Kill(id) => self.send(Request::Kill { id }),
@@ -614,6 +699,7 @@ impl App {
             Action::ResetDimension(d) => self.reset_dimension(d),
             Action::SetLevel(name) => self.set_level(name),
             Action::ApplyCore(t) => self.apply_core(*t),
+            Action::SelfUpdate(v) => self.run_self_update(v),
         }
     }
 
@@ -1170,8 +1256,8 @@ impl App {
             AppEvent::UpdateAvailable(v) => {
                 self.toast(
                     tr!(
-                        format!("Доступна версия {v} — выполните «mctui update»"),
-                        format!("Version {v} is available — run “mctui update”")
+                        format!("Доступна версия {v} — Ctrl+U, чтобы обновить"),
+                        format!("Version {v} is available — press Ctrl+U to update")
                     ),
                     ToastKind::Info,
                 );
@@ -1518,6 +1604,7 @@ impl App {
                 'r' => return self.stop(true),
                 'b' => return self.backup(),
                 'l' => return self.toggle_logs(),
+                'u' => return self.self_update(),
                 _ => {}
             }
         }
@@ -2234,7 +2321,9 @@ impl App {
                 let l = layout::main(self.area);
                 match m.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
-                        if l.logs_btn.contains(pos) {
+                        if self.update_badge.get().contains(pos) {
+                            self.self_update();
+                        } else if l.logs_btn.contains(pos) {
                             self.toggle_logs();
                         } else if l.tabs.contains(pos) {
                             if let Some(t) = layout::tab_at(l.tabs, m.column) {
