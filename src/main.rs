@@ -5,6 +5,7 @@ mod backup;
 mod backup_copy;
 mod client;
 mod clone;
+mod compat;
 mod complete;
 mod config;
 mod core;

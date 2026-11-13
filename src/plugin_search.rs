@@ -20,7 +20,7 @@ use std::process::Stdio;
 use crate::plugins::{self, MrDependency, MrVersion, PluginKind};
 use crate::tr;
 
-const HANGAR_API: &str = "https://hangar.papermc.io/api/v1";
+pub(crate) const HANGAR_API: &str = "https://hangar.papermc.io/api/v1";
 /// Результатов на страницу из каждого источника.
 pub const PAGE_SIZE: usize = 20;
 /// Сколько версий проекта смотреть при выборе совместимой.
@@ -174,7 +174,7 @@ pub(crate) trait Http {
     fn post_json(&self, url: &str, body: &serde_json::Value) -> Result<String>;
 }
 
-struct Curl;
+pub(crate) struct Curl;
 
 fn source_name(url: &str) -> &'static str {
     if url.starts_with(HANGAR_API) { "Hangar" } else { "Modrinth" }
@@ -212,7 +212,7 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str, src: &str) -> Result<T> {
 }
 
 /// Процентное кодирование для query-параметров.
-fn enc(s: &str) -> String {
+pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
@@ -231,7 +231,7 @@ fn game_version_key(v: &str) -> Option<Vec<u32>> {
     v.split('.').map(|p| p.parse().ok()).collect()
 }
 
-fn newest_game_version<'a>(vs: impl IntoIterator<Item = &'a String>) -> Option<String> {
+pub(crate) fn newest_game_version<'a>(vs: impl IntoIterator<Item = &'a String>) -> Option<String> {
     vs.into_iter().filter_map(|v| Some((game_version_key(v)?, v))).max().map(|(_, v)| v.clone())
 }
 
