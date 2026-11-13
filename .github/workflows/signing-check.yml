@@ -1,0 +1,39 @@
+name: Signing key check
+
+# Ручная проверка секрета MINISIGN_SECRET_KEY: подписывает тестовый файл так же, как release.yml,
+# и проверяет подпись ключом из packaging/minisign.pub. Запуск: Actions → Signing key check → Run workflow
+# или `gh workflow run signing-check.yml`. Ничего не публикует.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sign and verify a test file
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is not set"
+            exit 1
+          fi
+          if ! printf '%s\n' "$MINISIGN_SECRET_KEY" | head -1 | grep -q '^untrusted comment:'; then
+            echo "::error::MINISIGN_SECRET_KEY must be the whole key file, starting with 'untrusted comment:'"
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          key="$RUNNER_TEMP/minisign.key"
+          ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key" )
+          trap 'rm -f "$key"' EXIT
+          f="$RUNNER_TEMP/mctui-signing-check"
+          echo "signing check ${GITHUB_SHA}" > "$f"
+          minisign -S -s "$key" -m "$f" -t "mctui v0.0.0 mctui-signing-check" < /dev/null
+          minisign -V -H -p packaging/minisign.pub -m "$f"
+          echo "::notice::MINISIGN_SECRET_KEY matches packaging/minisign.pub"

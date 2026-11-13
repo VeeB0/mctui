@@ -1,0 +1,19 @@
+# Еженедельные PR с обновлениями зависимостей: crates (Cargo.lock) и GitHub Actions.
+# Мелкие обновления собираются в один PR, мажорные приходят по отдельности.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

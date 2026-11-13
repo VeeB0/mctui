@@ -218,4 +218,87 @@ mod tests {
         let m = Msg::Notice { text: "ok".into(), kind: NoticeKind::Ok };
         assert!(matches!(serde_json::from_str::<Msg>(encode(&m).trim()).unwrap(), Msg::Notice { .. }));
     }
+
+    /// Проводной формат: окно одной версии говорит со службой другой (обновление, откат), а `Detach`
+    /// и `Hello` старые службы и окна понимают по этим именам. Переименование тега или поля ломает их —
+    /// тогда этот тест должен упасть, и менять формат можно только вместе с [`PROTOCOL`].
+    #[test]
+    fn wire_format_is_stable() {
+        assert_eq!(PROTOCOL, 1);
+        let hello = Request::Hello { token: "t".into(), version: "0.4.0".into(), protocol: 1 };
+        assert_eq!(encode(&hello), "{\"t\":\"Hello\",\"token\":\"t\",\"version\":\"0.4.0\",\"protocol\":1}\n");
+        assert_eq!(encode(&Request::Detach), "{\"t\":\"Detach\"}\n");
+        assert_eq!(encode(&Request::Shutdown), "{\"t\":\"Shutdown\"}\n");
+        assert_eq!(encode(&Request::StopAll), "{\"t\":\"StopAll\"}\n");
+        assert_eq!(encode(&Request::Stop { id: 2, restart: true }), "{\"t\":\"Stop\",\"id\":2,\"restart\":true}\n");
+        assert_eq!(
+            encode(&Request::Command { id: 1, cmd: "list".into(), user: false }),
+            "{\"t\":\"Command\",\"id\":1,\"cmd\":\"list\",\"user\":false}\n"
+        );
+        assert_eq!(encode(&Msg::Denied { reason: "x".into() }), "{\"t\":\"Denied\",\"reason\":\"x\"}\n");
+        assert_eq!(
+            encode(&Msg::Log { id: 0, lines: vec!["a".into()], reset: true }),
+            "{\"t\":\"Log\",\"id\":0,\"lines\":[\"a\"],\"reset\":true}\n"
+        );
+        let welcome = Msg::Welcome {
+            version: "0.4.0".into(),
+            protocol: 1,
+            pid: 7,
+            config_path: "/c/servers.toml".into(),
+            language: Some("ru".into()),
+            can_detach: true,
+        };
+        assert_eq!(
+            encode(&welcome),
+            "{\"t\":\"Welcome\",\"version\":\"0.4.0\",\"protocol\":1,\"pid\":7,\"config_path\":\"/c/servers.toml\",\
+             \"language\":\"ru\",\"can_detach\":true}\n"
+        );
+    }
+
+    /// Служба 0.3 не знает `can_detach`: окно должно считать, что отпустить серверы она не умеет.
+    #[test]
+    fn welcome_from_0_3_daemon() {
+        let m: Msg = serde_json::from_str(
+            r#"{"t":"Welcome","version":"0.3.0","protocol":1,"pid":42,"config_path":"/x/servers.toml","language":null}"#,
+        )
+        .unwrap();
+        match m {
+            Msg::Welcome { version, can_detach, language, .. } => {
+                assert_eq!(version, "0.3.0");
+                assert!(!can_detach);
+                assert_eq!(language, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Снимок сервера от службы 0.2 (без `alerts`) читается новым окном.
+    #[test]
+    fn server_view_without_alerts() {
+        let cfg = ServerConfig::new_rcon("A", "example.org", 25575, "p");
+        let v = crate::server::ServerState::new(cfg, 3).view();
+        let mut j = serde_json::to_value(&v).unwrap();
+        assert!(j.as_object_mut().unwrap().remove("alerts").is_some());
+        let back: ServerView = serde_json::from_value(j).unwrap();
+        assert_eq!((back.id, back.cfg.name.as_str()), (3, "A"));
+        assert!(back.alerts.is_empty());
+    }
+
+    /// Поля, добавленные более новой версией, старая пропускает; незнакомый тип сообщения не
+    /// разбирается — окно и служба такие строки молча пропускают, а не рвут связь.
+    #[test]
+    fn newer_peer_is_tolerated() {
+        let m: Msg = serde_json::from_str(r#"{"t":"Notice","text":"hi","kind":"Ok","future":1}"#).unwrap();
+        assert!(matches!(m, Msg::Notice { kind: NoticeKind::Ok, .. }));
+        let r: Request = serde_json::from_str(r#"{"t":"Start","id":1,"future":true}"#).unwrap();
+        assert!(matches!(r, Request::Start { id: 1 }));
+        assert!(serde_json::from_str::<Msg>(r#"{"t":"FromTheFuture","x":1}"#).is_err());
+        assert!(serde_json::from_str::<Request>(r#"{"t":"FromTheFuture"}"#).is_err());
+    }
+
+    #[test]
+    fn endpoint_is_next_to_config() {
+        let p = endpoint_path(Path::new("/home/u/.config/mctui/servers.toml"));
+        assert_eq!(p, Path::new("/home/u/.config/mctui/daemon.json"));
+    }
 }

@@ -1,0 +1,39 @@
+# cargo-deny: https://embarkstudios.github.io/cargo-deny/
+# Локально: cargo deny check   (brew install cargo-deny / cargo install cargo-deny --locked)
+
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# Уязвимости и отозванные (yanked) версии из RustSec. Исключение — ID с причиной:
+# ignore = [{ id = "RUSTSEC-0000-0000", reason = "…" }]
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Лицензии, совместимые с MIT-лицензией mctui. MPL-2.0 — слабый копилефт на уровне файлов
+# (option-ext через dirs): распространять бинарник можно, менять сами файлы crate мы не будем.
+# Новая лицензия у зависимости → CI упадёт, решение — дописать её сюда осознанно.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "Zlib",
+  "Unicode-3.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

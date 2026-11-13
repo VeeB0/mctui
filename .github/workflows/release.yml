@@ -2,6 +2,8 @@ name: Release
 
 # Выпуск: раздел ## [X.Y.Z] в CHANGELOG.md, version в Cargo.toml, затем
 # git tag vX.Y.Z && git push origin main vX.Y.Z. Описание релиза берётся из CHANGELOG.md.
+# Нужен секрет MINISIGN_SECRET_KEY — содержимое секретного ключа minisign (без пароля), открытый ключ
+# к нему лежит в packaging/minisign.pub и вшит в программу: `mctui update` не ставит неподписанную сборку.
 on:
   push:
     tags: ["v*"]
@@ -62,6 +64,29 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Sign binaries (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::MINISIGN_SECRET_KEY is not set — mctui update refuses unsigned builds"
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          key="$RUNNER_TEMP/minisign.key"
+          ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key" )
+          trap 'rm -f "$key"' EXIT
+          for f in dist/mctui-*; do
+            case "$f" in *.sha256|*.minisig) continue ;; esac
+            name=$(basename "$f")
+            # Доверенный комментарий проверяет mctui update: версия и платформа должны совпасть.
+            minisign -S -s "$key" -m "$f" -t "mctui ${GITHUB_REF_NAME} $name" < /dev/null
+            # -H: только формат с предварительным хешем — другой mctui не примет; ключ — тот, что вшит.
+            minisign -V -H -p packaging/minisign.pub -m "$f"
+          done
+          ls -la dist
       - name: Release notes from CHANGELOG.md
         run: scripts/changelog-section.sh "${GITHUB_REF_NAME}" > release-notes.md && cat release-notes.md
       - uses: softprops/action-gh-release@v2

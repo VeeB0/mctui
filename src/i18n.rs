@@ -51,7 +51,25 @@ pub fn set(lang: Lang) {
     LANG.store(if lang == Lang::En { EN } else { RU }, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_LANG: std::cell::Cell<Option<Lang>> = const { std::cell::Cell::new(None) };
+}
+
+/// Тесты: язык только для текущего потока. Тесты идут параллельно, а [`set`] меняет язык всего процесса.
+#[cfg(test)]
+pub fn with_lang<R>(lang: Lang, f: impl FnOnce() -> R) -> R {
+    let prev = TEST_LANG.with(|c| c.replace(Some(lang)));
+    let r = f();
+    TEST_LANG.with(|c| c.set(prev));
+    r
+}
+
 pub fn current() -> Lang {
+    #[cfg(test)]
+    if let Some(l) = TEST_LANG.with(|c| c.get()) {
+        return l;
+    }
     match LANG.load(Ordering::Relaxed) {
         EN => Lang::En,
         RU => Lang::Ru,

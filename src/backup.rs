@@ -46,6 +46,23 @@ pub struct BackupJob {
     pub copy_to: Vec<String>,
     /// stdin и поток строк запущенного сервера; None — сервер остановлен.
     pub live: Option<(mpsc::UnboundedSender<String>, broadcast::Receiver<String>)>,
+    /// Файл-отметка «бэкап выключил автосохранение» (см. [`take_save_off_mark`]); вместе с `live`.
+    pub save_off_mark: Option<PathBuf>,
+}
+
+/// Отметка пишется перед `save-off` и удаляется после `save-on`. Если служба умерла посреди бэкапа,
+/// сервер (он переживает службу) остался бы без автосохранения до своего перезапуска — новая служба
+/// находит отметку при подключении и включает сохранение обратно. Ручной `save-off` из консоли не трогается.
+fn put_save_off_mark(mark: &Path) {
+    if let Some(dir) = mark.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(mark, b"save-off\n");
+}
+
+/// Убирает отметку `save-off`; `true` — она была, то есть автосохранение надо включить (`save-on`).
+pub fn take_save_off_mark(mark: &Path) -> bool {
+    std::fs::remove_file(mark).is_ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,8 +157,12 @@ pub async fn run(job: BackupJob, tx: mpsc::UnboundedSender<AppEvent>) {
     };
     let mut warnings: Vec<String> = vec![];
     let live = job.live;
+    let mark = job.save_off_mark.filter(|_| live.is_some());
     if let Some((stdin, mut lines)) = live.as_ref().map(|(s, l)| (s.clone(), l.resubscribe())) {
         progress("save-off, save-all flush…".into());
+        if let Some(m) = &mark {
+            put_save_off_mark(m);
+        }
         let _ = stdin.send("save-off".into());
         let _ = stdin.send("save-all flush".into());
         let waited = tokio::time::timeout(SAVE_TIMEOUT, async {
@@ -205,6 +226,9 @@ pub async fn run(job: BackupJob, tx: mpsc::UnboundedSender<AppEvent>) {
     // Копирование в другие места мир уже не трогает — сохранение можно включать сразу.
     if let Some((stdin, _)) = &live {
         let _ = stdin.send("save-on".into());
+        if let Some(m) = &mark {
+            take_save_off_mark(m);
+        }
     }
     let ev = match result {
         Ok(Ok((path, bytes, link_warn))) => {
@@ -951,6 +975,7 @@ pub(crate) mod tests {
             mode: BackupMode::Incremental,
             copy_to: vec![disk.display().to_string(), "rclone:gd:mc".into(), String::new()],
             live: None,
+            save_off_mark: None,
         };
         run(job, tx).await;
         let mut done = None;
@@ -967,6 +992,58 @@ pub(crate) mod tests {
         // rclone, скорее всего, не установлен в тестовом окружении; если установлен — удалённого «gd» нет.
         let w = warning.expect("rclone target must warn");
         assert!(w.contains("rclone"), "{w}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Пока идёт бэкап запущенного сервера, лежит отметка `save-off`; после `save-on` её нет.
+    #[tokio::test]
+    async fn run_live_marks_save_off_until_save_on() {
+        let root = tmpdir("run-live");
+        make_world(&root);
+        let mark = root.join("run/srv.save-off");
+        let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
+        let (lines_tx, lines_rx) = broadcast::channel::<String>(16);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let job = BackupJob {
+            id: 1,
+            name: "srv".into(),
+            root: root.clone(),
+            paths: vec!["world".into()],
+            backup_dir: root.join("backups"),
+            keep: 3,
+            mode: BackupMode::Full,
+            copy_to: vec![],
+            live: Some((stdin_tx, lines_rx)),
+            save_off_mark: Some(mark.clone()),
+        };
+        let task = tokio::spawn(run(job, tx));
+        assert_eq!(stdin_rx.recv().await.as_deref(), Some("save-off"));
+        assert!(mark.exists(), "the mark must be written before save-off");
+        assert_eq!(stdin_rx.recv().await.as_deref(), Some("save-all flush"));
+        lines_tx.send("[12:00:00] [Server thread/INFO]: Saved the game".into()).unwrap();
+        task.await.unwrap();
+        assert_eq!(stdin_rx.recv().await.as_deref(), Some("save-on"));
+        assert!(!mark.exists(), "the mark must be gone after save-on");
+        assert!(!take_save_off_mark(&mark));
+        let mut done = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::Backup { id: 1, ev: BackupEvent::Done { warning, .. } } = ev {
+                assert_eq!(warning, None);
+                done = true;
+            }
+        }
+        assert!(done);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_off_mark_is_taken_once() {
+        let root = tmpdir("mark");
+        let mark = root.join("run/x.save-off");
+        assert!(!take_save_off_mark(&mark));
+        put_save_off_mark(&mark);
+        assert!(take_save_off_mark(&mark));
+        assert!(!take_save_off_mark(&mark));
         let _ = std::fs::remove_dir_all(&root);
     }
 

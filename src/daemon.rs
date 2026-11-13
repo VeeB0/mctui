@@ -252,3 +252,131 @@ async fn shutdown_signal() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_config(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("mctui-daemon-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("servers.toml")
+    }
+
+    /// Приём подключений как в [`run`], но без серверов: события клиентов уходят в тест.
+    /// В `daemon.json` пишется `endpoint_token` — так можно проверить окно с неверным токеном.
+    async fn fake_daemon(cfg: &Path, token: &str, endpoint_token: &str) -> mpsc::UnboundedReceiver<ClientEvent> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let ep = Endpoint { port, token: endpoint_token.into(), pid: 1, version: "test".into() };
+        write_endpoint(&proto::endpoint_path(cfg), &ep).unwrap();
+        let (ctx, crx) = mpsc::unbounded_channel();
+        let token = token.to_string();
+        tokio::spawn(async move {
+            let mut cid = 0;
+            while let Ok((stream, _)) = listener.accept().await {
+                cid += 1;
+                tokio::spawn(client_task(cid, stream, token.clone(), ctx.clone()));
+            }
+        });
+        crx
+    }
+
+    fn welcome() -> String {
+        proto::encode(&Msg::Welcome {
+            version: "test".into(),
+            protocol: proto::PROTOCOL,
+            pid: 1,
+            config_path: "/x".into(),
+            language: None,
+            can_detach: true,
+        })
+    }
+
+    async fn next(crx: &mut mpsc::UnboundedReceiver<ClientEvent>) -> ClientEvent {
+        tokio::time::timeout(Duration::from_secs(5), crx.recv()).await.expect("event").expect("channel")
+    }
+
+    /// Окно (`client::oneshot`) ↔ служба: Hello с токеном из daemon.json → Welcome → запрос → отключение.
+    #[tokio::test]
+    async fn client_and_daemon_handshake() {
+        let cfg = tmp_config("ok");
+        let mut crx = fake_daemon(&cfg, "secret", "secret").await;
+        let cfg2 = cfg.clone();
+        let client = tokio::spawn(async move { crate::client::oneshot(&cfg2, Request::Start { id: 4 }).await });
+        let ClientEvent::Hello { cid, tx } = next(&mut crx).await else { panic!("expected Hello") };
+        tx.send(welcome()).unwrap();
+        let got = client.await.unwrap().unwrap().expect("connected");
+        assert!(matches!(got, Msg::Welcome { can_detach: true, .. }));
+        assert!(matches!(next(&mut crx).await, ClientEvent::Req { req: Request::Start { id: 4 } }));
+        assert!(matches!(next(&mut crx).await, ClientEvent::Gone { cid: c } if c == cid));
+        let _ = std::fs::remove_dir_all(cfg.parent().unwrap());
+    }
+
+    /// Неверный токен: служба молча закрывает соединение, окну — «служба не запущена».
+    #[tokio::test]
+    async fn wrong_token_is_dropped() {
+        let cfg = tmp_config("token");
+        let mut crx = fake_daemon(&cfg, "secret", "guess").await;
+        let got = crate::client::oneshot(&cfg, Request::Shutdown).await.unwrap();
+        assert!(got.is_none());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(crx.try_recv().is_err(), "no client may be registered");
+        let _ = std::fs::remove_dir_all(cfg.parent().unwrap());
+    }
+
+    /// Первая строка не Hello — отключение без регистрации; чужой протокол — Denied с причиной.
+    #[tokio::test]
+    async fn non_hello_and_protocol_mismatch() {
+        let cfg = tmp_config("proto");
+        let mut crx = fake_daemon(&cfg, "secret", "secret").await;
+        let ep: Endpoint = serde_json::from_str(&std::fs::read_to_string(proto::endpoint_path(&cfg)).unwrap()).unwrap();
+        let read_all = |mut s: TcpStream| async move {
+            use tokio::io::AsyncReadExt;
+            let mut out = String::new();
+            let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_string(&mut out)).await;
+            out
+        };
+
+        let mut s = TcpStream::connect(("127.0.0.1", ep.port)).await.unwrap();
+        s.write_all(proto::encode(&Request::Shutdown).as_bytes()).await.unwrap();
+        assert_eq!(read_all(s).await, "");
+
+        let mut s = TcpStream::connect(("127.0.0.1", ep.port)).await.unwrap();
+        let hello = Request::Hello { token: "secret".into(), version: "9.0.0".into(), protocol: 99 };
+        s.write_all(proto::encode(&hello).as_bytes()).await.unwrap();
+        let reply = read_all(s).await;
+        match serde_json::from_str::<Msg>(reply.trim()).unwrap() {
+            Msg::Denied { reason } => assert!(reason.contains("99"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(crx.try_recv().is_err(), "no client may be registered");
+        let _ = std::fs::remove_dir_all(cfg.parent().unwrap());
+    }
+
+    #[test]
+    fn endpoint_file_is_private_and_atomic() {
+        let cfg = tmp_config("ep");
+        let path = proto::endpoint_path(&cfg);
+        let ep = Endpoint { port: 1234, token: random_token(), pid: 5, version: "x".into() };
+        write_endpoint(&path, &ep).unwrap();
+        let back: Endpoint = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!((back.port, back.token.as_str()), (1234, ep.token.as_str()));
+        assert!(!path.with_extension("json.tmp").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(cfg.parent().unwrap());
+    }
+
+    #[test]
+    fn tokens_are_random_hex() {
+        let (a, b) = (random_token(), random_token());
+        assert_eq!(a.len(), 48);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+}

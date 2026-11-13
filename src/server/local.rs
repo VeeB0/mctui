@@ -46,6 +46,11 @@ fn state_path(run_dir: &Path, cfg: &ServerConfig) -> PathBuf {
     run_dir.join(format!("{}.json", keeper::run_key(cfg.dir())))
 }
 
+/// Отметка «бэкап выключил автосохранение» этого сервера (см. [`crate::backup::take_save_off_mark`]).
+pub fn save_off_mark(run_dir: &Path, cfg: &ServerConfig) -> PathBuf {
+    run_dir.join(format!("{}.save-off", keeper::run_key(cfg.dir())))
+}
+
 impl LocalProc {
     /// Запускает сервер через хранителя и подключается к нему.
     pub fn spawn(id: usize, cfg: &ServerConfig, run_dir: &Path, tx: mpsc::UnboundedSender<AppEvent>) -> Result<Self> {

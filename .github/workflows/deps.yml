@@ -1,0 +1,28 @@
+name: Dependencies
+
+# cargo-deny (настройки — deny.toml): известные уязвимости и отозванные версии crates (RustSec),
+# лицензии, источники. Запускается на каждый push/PR с изменением зависимостей и раз в неделю —
+# чтобы новая уязвимость в уже стоящем crate не прошла незамеченной.
+# Уязвимость без исправления: добавить её ID в [advisories].ignore в deny.toml с причиной.
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml, Cargo.lock, deny.toml, .github/workflows/deps.yml]
+  pull_request:
+    paths: [Cargo.toml, Cargo.lock, deny.toml, .github/workflows/deps.yml]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [advisories, bans licenses sources]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check ${{ matrix.checks }}

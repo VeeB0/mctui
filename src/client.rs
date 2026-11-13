@@ -20,6 +20,13 @@ impl Client {
     pub fn send(&self, r: Request) {
         let _ = self.tx.send(r);
     }
+
+    /// Клиент без службы (тесты): запросы никуда не уходят.
+    #[cfg(test)]
+    pub fn detached() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Self { tx }
+    }
 }
 
 pub fn start(config_path: PathBuf, default_config: bool, app: mpsc::UnboundedSender<AppEvent>) -> Client {

@@ -2,8 +2,13 @@
 //!
 //! Сеть — через системный `curl` (есть в macOS, Linux и Windows 10+), чтобы не тащить TLS-стек
 //! в бинарник и спокойно собирать его под все платформы.
+//!
+//! Каждая сборка в релизе подписана minisign (`<asset>.minisig`, ключ — секрет CI
+//! `MINISIGN_SECRET_KEY`), открытый ключ вшит в программу: [`RELEASE_PUBKEY`]. Без верной подписи
+//! программа не заменяется — SHA-256 из того же релиза защищает только от битой загрузки, а подпись —
+//! и от подменённого релиза.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,6 +19,35 @@ pub const REPO: &str = match option_env!("MCTUI_REPO") {
     Some(r) => r,
     None => "VeeB0/mctui",
 };
+
+/// Открытый ключ minisign, которым CI подписывает сборки. Форк со своими релизами кладёт в
+/// `packaging/minisign.pub` свой ключ.
+pub const RELEASE_PUBKEY: &str = include_str!("../packaging/minisign.pub");
+
+/// Проверяет подпись minisign сборки `asset` версии `version` (без `v`): подпись ключом `pubkey`
+/// и доверенный комментарий `mctui v<version> <asset>` — чтобы старую подписанную сборку
+/// или сборку для другой платформы нельзя было выдать за эту.
+fn verify_signature(pubkey: &str, bin: &[u8], minisig: &str, version: &str, asset: &str) -> Result<()> {
+    let bad = |e: &dyn std::fmt::Display| {
+        anyhow!(
+            "{}",
+            crate::tr!(format!("подпись сборки не прошла проверку ({e})"), format!("signature check failed ({e})"))
+        )
+    };
+    let pk = minisign_verify::PublicKey::decode(pubkey).map_err(|e| bad(&e))?;
+    let sig = minisign_verify::Signature::decode(minisig).map_err(|e| bad(&e))?;
+    pk.verify(bin, &sig, false).map_err(|e| bad(&e))?;
+    let tag = format!("v{}", version.trim_start_matches('v'));
+    let comment = sig.trusted_comment();
+    let words: Vec<&str> = comment.split_whitespace().collect();
+    if !words.contains(&tag.as_str()) || !words.contains(&asset) {
+        return Err(bad(&crate::tr!(
+            format!("подпись выдана для «{comment}», а скачивается {tag} {asset}"),
+            format!("signed for \"{comment}\", but downloading {tag} {asset}")
+        )));
+    }
+    Ok(())
+}
 
 /// Имя файла сборки в релизе для текущей платформы.
 pub fn asset_name() -> Option<&'static str> {
@@ -154,19 +188,31 @@ pub fn brew_upgrade() -> Result<()> {
     Ok(())
 }
 
-/// Скачивает сборку `version`, проверяет SHA-256 и подменяет `exe`.
+/// Скачивает сборку `version`, проверяет подпись minisign и SHA-256 и подменяет `exe`.
 pub fn apply(exe: &Path, version: &str) -> Result<()> {
     let asset = asset_name()
         .context(crate::tr!("для этой платформы нет готовых сборок", "no prebuilt binaries for this platform"))?;
     let dir = exe.parent().context("exe dir")?;
     let new = dir.join(format!(".mctui-update-{}", std::process::id()));
     let sum = dir.join(format!(".mctui-update-{}.sha256", std::process::id()));
+    let sig = dir.join(format!(".mctui-update-{}.minisig", std::process::id()));
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
     let res = (|| {
         download(&format!("{base}/{asset}"), &new)?;
         download(&format!("{base}/{asset}.sha256"), &sum)?;
+        download(&format!("{base}/{asset}.minisig"), &sig).map_err(|e| {
+            anyhow!(
+                "{}",
+                crate::tr!(
+                    format!("у сборки нет подписи — обновление отменено ({e})"),
+                    format!("the build is not signed — update cancelled ({e})")
+                )
+            )
+        })?;
+        let bin = std::fs::read(&new)?;
+        verify_signature(RELEASE_PUBKEY, &bin, &std::fs::read_to_string(&sig)?, version, asset)?;
         let expected = std::fs::read_to_string(&sum)?.split_whitespace().next().unwrap_or("").to_lowercase();
-        let actual = sha256_hex(&std::fs::read(&new)?);
+        let actual = sha256_hex(&bin);
         if expected != actual {
             bail!(
                 "{}",
@@ -180,6 +226,7 @@ pub fn apply(exe: &Path, version: &str) -> Result<()> {
     })();
     let _ = std::fs::remove_file(&new);
     let _ = std::fs::remove_file(&sum);
+    let _ = std::fs::remove_file(&sig);
     res
 }
 
@@ -288,6 +335,44 @@ mod tests {
     #[test]
     fn sha256_known_value() {
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    /// Одноразовый тестовый ключ (не ключ релизов) и подпись `minisign -S -t "mctui v9.9.9 mctui-test-asset"`.
+    const TEST_PUBKEY: &str = "untrusted comment: minisign public key 0CAFD137B32D31E6
+RWTmMS2zN9GvDB32oJgaO2c/WAFYAk3SUM1+qhoRsTHOls4d909NNHWa
+";
+    const TEST_BLOB: &[u8] = b"mctui test binary\n";
+    const TEST_SIG: &str = "untrusted comment: signature from minisign secret key
+RUTmMS2zN9GvDCgcEi4WNyIVRlVtZ2lfecDu03XGYJ1gnfmbiA+EY22U1aX62R3OoRfosHxyYQLKpH9yTv203m4ySxsVBlr1SAE=
+trusted comment: mctui v9.9.9 mctui-test-asset
+prXJJpLJBmU+cZBUbLyO/iu8V//WH8oPg5uIx5PbI++yh+G2+3mepog0bDOEyAy1jrAjEkz/Nvo5UvRe+2ZSBg==
+";
+
+    #[test]
+    fn signature_accepts_matching_build() {
+        verify_signature(TEST_PUBKEY, TEST_BLOB, TEST_SIG, "9.9.9", "mctui-test-asset").unwrap();
+        verify_signature(TEST_PUBKEY, TEST_BLOB, TEST_SIG, "v9.9.9", "mctui-test-asset").unwrap();
+    }
+
+    #[test]
+    fn signature_rejects_tampering_and_mismatch() {
+        // подменённый файл
+        assert!(verify_signature(TEST_PUBKEY, b"evil", TEST_SIG, "9.9.9", "mctui-test-asset").is_err());
+        // подпись другой версии или другой платформы
+        assert!(verify_signature(TEST_PUBKEY, TEST_BLOB, TEST_SIG, "9.9.10", "mctui-test-asset").is_err());
+        assert!(verify_signature(TEST_PUBKEY, TEST_BLOB, TEST_SIG, "9.9.9", "mctui-other").is_err());
+        // подпись чужим ключом: ключ релизов её не принимает
+        assert!(verify_signature(RELEASE_PUBKEY, TEST_BLOB, TEST_SIG, "9.9.9", "mctui-test-asset").is_err());
+        // изменённый доверенный комментарий ломает глобальную подпись
+        let forged = TEST_SIG.replace("v9.9.9", "v9.9.10");
+        assert!(verify_signature(TEST_PUBKEY, TEST_BLOB, &forged, "9.9.10", "mctui-test-asset").is_err());
+        // мусор вместо подписи
+        assert!(verify_signature(TEST_PUBKEY, TEST_BLOB, "not a signature", "9.9.9", "mctui-test-asset").is_err());
+    }
+
+    #[test]
+    fn release_pubkey_is_valid() {
+        minisign_verify::PublicKey::decode(RELEASE_PUBKEY).unwrap();
     }
 
     #[test]

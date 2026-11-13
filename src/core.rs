@@ -194,9 +194,15 @@ impl Manager {
     fn attach_running(&mut self, i: usize) -> bool {
         let run_dir = self.run_dir();
         let s = &mut self.servers[i];
+        let mark = crate::server::local::save_off_mark(&run_dir, &s.cfg);
         match LocalProc::attach(s.id, &s.cfg, &run_dir, self.tx.clone()) {
-            Found::Nothing => false,
+            Found::Nothing => {
+                // Сервер с тех пор перезапускался — его автосохранение и так включено.
+                backup::take_save_off_mark(&mark);
+                false
+            }
             Found::Ended(status) => {
+                backup::take_save_off_mark(&mark);
                 s.last_exit = Some(status.clone());
                 self.log(
                     i,
@@ -239,6 +245,11 @@ impl Manager {
                 s.started_at = Instant::now().checked_sub(Duration::from_secs(ago)).or(Some(Instant::now()));
                 s.user_stop = false;
                 s.reload_props();
+                // Прошлая служба умерла посреди бэкапа, не успев включить автосохранение обратно.
+                let resume_saving = backup::take_save_off_mark(&mark);
+                if resume_saving && let Some(p) = &s.proc {
+                    p.send("save-on");
+                }
                 self.log(
                     i,
                     &tr!(
@@ -246,6 +257,15 @@ impl Manager {
                         format!("──────── mctui: the service reattached to the running server (pid {pid}) ────────")
                     ),
                 );
+                if resume_saving {
+                    self.log(
+                        i,
+                        tr!(
+                            "mctui: прошлая служба прервалась посреди бэкапа — автосохранение мира включено снова (save-on)",
+                            "mctui: the previous service stopped in the middle of a backup — world autosave is back on (save-on)"
+                        ),
+                    );
+                }
                 if a.ready {
                     self.connect_rcon(i);
                     self.update_schedule(i);
@@ -417,6 +437,7 @@ impl Manager {
     }
 
     fn backup(&mut self, idx: usize, auto: bool) {
+        let run_dir = self.run_dir();
         let s = &mut self.servers[idx];
         if s.cfg.kind == Kind::Rcon {
             self.notice(
@@ -450,6 +471,7 @@ impl Manager {
             mode: s.cfg.backup_mode,
             copy_to: s.cfg.backup_copy_to.clone(),
             live: s.proc.as_ref().map(|p| (p.stdin(), p.lines.subscribe())),
+            save_off_mark: Some(crate::server::local::save_off_mark(&run_dir, &s.cfg)),
         };
         s.backup_progress = Some(
             if auto {
@@ -1375,8 +1397,9 @@ mod tests {
 
     #[test]
     fn warnings_text() {
-        crate::i18n::set(crate::i18n::Lang::Ru);
-        assert_eq!(restart_warning(300), "Сервер перезапустится через 5 мин");
-        assert_eq!(restart_warning(10), "Сервер перезапустится через 10 с");
+        crate::i18n::with_lang(crate::i18n::Lang::Ru, || {
+            assert_eq!(restart_warning(300), "Сервер перезапустится через 5 мин");
+            assert_eq!(restart_warning(10), "Сервер перезапустится через 10 с");
+        });
     }
 }

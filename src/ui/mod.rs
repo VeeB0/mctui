@@ -4,6 +4,8 @@ mod main_screen;
 mod panel;
 mod popup;
 mod setup;
+#[cfg(all(test, not(windows)))]
+mod tests;
 pub mod theme;
 
 use crate::app::{App, Screen};

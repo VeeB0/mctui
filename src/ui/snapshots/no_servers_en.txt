@@ -1,0 +1,28 @@
+
+  ┌ Welcome to mctui ────────────────────────────────────────────────────────────────────────────┐
+  │Paste the path to a Minecraft server folder (Cmd+V / Ctrl+V, or drag the folder into the      │
+  │terminal). mctui works out how to start it.                                                   │
+  │                                                                                              │
+  │                                                                                              │
+  │   Server         ● Existing folder   ○ Create new   ○ Remote (RCON)                          │
+  │                                                                                              │
+  │ ▶ Folder        /Users/you/minecraft/server                                                  │
+  │                                                                                              │
+  │   Name                                                                                       │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │                                                                                              │
+  │  Enter  save   Tab/↑↓ fields · ←→ choose · Esc — quit                                        │
+  │ Settings: /nonexistent/mctui-snapshot/servers.toml                                           │
+  └──────────────────────────────────────────────────────────────────────────────────────────────┘
+
