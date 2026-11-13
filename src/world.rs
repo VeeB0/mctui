@@ -360,16 +360,33 @@ pub fn reset_dimension(dir: &Path, level_name: &str, dim: Dimension) -> Result<P
         n += 1;
     }
     std::fs::create_dir_all(&stash).with_context(|| stash.display().to_string())?;
+    let mut moved: Vec<(&PathBuf, PathBuf)> = vec![];
     for src in &found {
-        let rel = src.strip_prefix(dir).unwrap_or(src);
-        let dst = stash.join(rel);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent).with_context(|| parent.display().to_string())?;
+        let dst = stash.join(src.strip_prefix(dir).unwrap_or(src));
+        let step = || -> Result<()> {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).with_context(|| parent.display().to_string())?;
+            }
+            std::fs::rename(src, &dst).with_context(|| format!("{} → {}", src.display(), dst.display()))
+        };
+        if let Err(e) = step() {
+            // Полусброшенное измерение хуже несброшенного: возвращаем уже перенесённое на место.
+            let back = moved.iter().rev().all(|(s, d)| std::fs::rename(d, s).is_ok());
+            if back {
+                let _ = std::fs::remove_dir_all(&stash); // там остались только пустые папки
+                return Err(e);
+            }
+            return Err(e.context(crate::tr!(
+                format!("сброс прерван; часть ландшафта осталась в {}", stash.display()),
+                format!("reset interrupted; part of the terrain is left in {}", stash.display())
+            )));
         }
-        std::fs::rename(src, &dst).with_context(|| format!("{} → {}", src.display(), dst.display()))?;
-        restore_configs(&dst, src)?;
+        moved.push((src, dst));
     }
-    rotate_stash(&stash_root);
+    for (src, dst) in &moved {
+        restore_configs(dst, src)?;
+    }
+    rotate_stash(&stash_root, &stash);
     Ok(stash)
 }
 
@@ -395,11 +412,13 @@ fn restore_configs(moved: &Path, original: &Path) -> Result<()> {
     Ok(())
 }
 
-fn rotate_stash(stash_root: &Path) {
+/// Оставляет последние `KEEP_BEFORE_RESET` копий; только что сделанную (`fresh`) не трогает никогда,
+/// даже если часы ушли назад и её имя оказалось «старше» прежних.
+fn rotate_stash(stash_root: &Path, fresh: &Path) {
     if let Ok(rd) = std::fs::read_dir(stash_root) {
-        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && p != fresh).collect();
         dirs.sort();
-        while dirs.len() > KEEP_BEFORE_RESET {
+        while dirs.len() >= KEEP_BEFORE_RESET {
             let _ = std::fs::remove_dir_all(dirs.remove(0));
         }
     }
@@ -977,6 +996,38 @@ mod tests {
         assert!(reset_dimension(&d, "world", Dimension::Overworld).is_err());
         assert!(reset_dimension(&d, "../x", Dimension::Nether).is_err());
         assert!(d.join("world/level.dat").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reset_rolls_back_when_a_move_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("reset-rollback");
+        file(&d.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"), 5);
+        file(&d.join("world/region/r.0.0.mca"), 5);
+        // Первый перенос (26.x) проходит, второй (из <level>, только для чтения) — нет.
+        let level = d.join("world");
+        std::fs::set_permissions(&level, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let res = reset_dimension(&d, "world", Dimension::Overworld);
+        std::fs::set_permissions(&level, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(res.is_err());
+        assert!(d.join("world/dimensions/minecraft/overworld/region/r.0.0.mca").exists());
+        assert!(d.join("world/region/r.0.0.mca").exists());
+        assert!(reset_stashes(&d).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn fresh_stash_survives_rotation_after_clock_jump() {
+        let d = tmp("reset-clock");
+        for n in 1..=3 {
+            std::fs::create_dir_all(d.join(RESET_STASH_DIR).join(format!("99991231-23595{n}"))).unwrap();
+        }
+        file(&d.join("world/DIM-1/region/r.0.0.mca"), 5);
+        let st = reset_dimension(&d, "world", Dimension::Nether).unwrap();
+        assert!(st.join("world/DIM-1/region/r.0.0.mca").exists());
+        assert_eq!(reset_stashes(&d).len(), 3);
         let _ = std::fs::remove_dir_all(&d);
     }
 

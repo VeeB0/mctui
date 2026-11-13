@@ -1139,14 +1139,33 @@ async fn overworld_reset_needs_confirm_and_world_name() {
         key(&mut a, 'R');
         assert!(a.popup.is_none());
         assert!(toast_text(&a).contains("Stop the server first"), "{}", toast_text(&a));
+        // Упал и вот-вот перезапустится сам / идёт бэкап — тоже нет.
+        let mut v = srv.view(None);
+        v.status = crate::server::Status::Restarting;
+        v.restart_in = Some(5);
+        let mut a = app(vec![v]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("Stop the server first"), "{}", toast_text(&a));
+        let mut v = srv.view(None);
+        v.backup_progress = Some("50%".into());
+        let mut a = app(vec![v]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'R');
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("backup"), "{}", toast_text(&a));
 
         let mut a = app(vec![srv.view(None)]);
         open_world(&mut a, &srv);
         key(&mut a, 'R');
-        let Some(Popup::Confirm { text, action: Action::AskOverworldName, .. }) = &a.popup else {
+        let Some(Popup::Confirm { text, action: Action::AskOverworldName { .. }, .. }) = &a.popup else {
             panic!("expected the Overworld warning")
         };
         assert!(text.contains("same seed") && text.contains(".pechka-before-reset/"), "{text}");
+        // Длинное предупреждение целиком помещается на 80×24 вместе с кнопками.
+        let screen = render(&a, 80, 24);
+        assert!(screen.contains("type the world name.") && screen.contains("Enter / y"), "{screen}");
         // Esc — отмена.
         press(&mut a, KeyCode::Esc);
         assert!(a.popup.is_none());

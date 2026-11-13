@@ -47,6 +47,7 @@ mod sub_tabs;
 mod tools;
 mod world_tab;
 pub use backup_health::{BackupHealth, ago};
+pub use datapacks_tab::guarded_panic;
 pub use logs_screen::{LevelFilter, LogSource, LogsView};
 #[cfg(test)]
 pub(crate) use panel::PanelKind;
@@ -135,9 +136,17 @@ pub enum Action {
     DatapackToggle(PathBuf),
     ApplyDatapackUpdates(Vec<PathBuf>),
     InstallPlugin(Box<crate::plugin_search::InstallPlan>),
-    ResetDimension(crate::world::Dimension),
+    /// Сброс измерения мира `level` сервера `id` (сервер и мир запоминаются в момент вопроса).
+    ResetDimension {
+        id: usize,
+        level: String,
+        dim: crate::world::Dimension,
+    },
     /// Второй шаг сброса верхнего мира: спросить имя мира.
-    AskOverworldName,
+    AskOverworldName {
+        id: usize,
+        level: String,
+    },
     SetLevel(String),
     ApplyCore(Box<maintain::CoreTarget>),
     SelfUpdate(String),
@@ -181,8 +190,9 @@ pub enum EditTarget {
     Chat,
     LogSearch,
     PregenRadius(crate::world::Dimension),
-    /// Подтверждение сброса верхнего мира: нужно ввести имя мира (`level`).
+    /// Подтверждение сброса верхнего мира `level` сервера `id`: нужно ввести имя мира.
     ResetOverworld {
+        id: usize,
         level: String,
     },
     JvmMemory {
@@ -816,8 +826,8 @@ impl App {
             Action::DatapackToggle(path) => self.toggle_datapack_at(path),
             Action::ApplyDatapackUpdates(paths) => self.apply_datapack_updates(paths),
             Action::InstallPlugin(plan) => self.install_plugin(*plan),
-            Action::ResetDimension(d) => self.reset_dimension(d),
-            Action::AskOverworldName => self.ask_overworld_name(),
+            Action::ResetDimension { id, level, dim } => self.reset_dimension(id, level, dim),
+            Action::AskOverworldName { id, level } => self.ask_overworld_name(id, level),
             Action::SetLevel(name) => self.set_level(name),
             Action::ApplyCore(t) => self.apply_core(*t),
             Action::SelfUpdate(v) => self.run_self_update(v),

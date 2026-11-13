@@ -416,6 +416,9 @@ async fn tui(cfg_path: PathBuf, default_config: bool) -> i32 {
     let mut terminal = ratatui::init();
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if app::guarded_panic(info) {
+            return; // перехватит run_guarded: окно продолжает работать
+        }
         let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         hook(info);
     }));
