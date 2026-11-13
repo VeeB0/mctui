@@ -2,7 +2,7 @@
 
 use super::layout;
 use super::theme;
-use crate::app::{App, Focus, ServerUi, TABS, Tab, ToastKind, human_bytes, human_duration};
+use crate::app::{App, Focus, ServerUi, TABS, Tab, ToastKind, WorldRow, human_bytes, human_duration};
 use crate::config::Kind;
 use crate::plugins::PluginKind;
 use crate::proto::RconView;
@@ -47,6 +47,7 @@ pub fn draw(app: &App, f: &mut Frame) {
         Tab::Plugins => draw_plugins(app, f, l.content, focused),
         Tab::Settings => draw_settings(app, f, l.content, focused),
         Tab::Backups => draw_backups(app, f, l.content, focused),
+        Tab::World => draw_world(app, f, l.content, focused),
     }
     draw_response(app, f, l.response);
     draw_input(app, f, l.input);
@@ -921,13 +922,17 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "↑↓ выбор · n новый · r восстановить · d удалить · u обновить",
             "↑↓ select · n new · r restore · d delete · u refresh"
         ),
+        (Focus::Content, Tab::World) => tr!(
+            "↑↓ выбор · R сбросить Незер/Энд · p сгенерировать чанки · P/C пауза/продолжить · x отменить · Enter сменить мир · u обновить",
+            "↑↓ select · R reset Nether/End · p pregenerate · P/C pause/continue · x cancel · Enter switch world · u rescan"
+        ),
         (Focus::Content, Tab::Status) => tr!(
-            "f как друзьям зайти · 1-6 вкладки · Enter ввод команды",
-            "f how friends can join · 1-6 tabs · Enter type a command"
+            "f как друзьям зайти · 1-7 вкладки · Enter ввод команды",
+            "f how friends can join · 1-7 tabs · Enter type a command"
         ),
         _ => tr!(
-            "↑↓ сервер · a добавить · Del убрать · Tab фокус · 1-6 вкладки · f как друзьям зайти",
-            "↑↓ server · a add · Del remove · Tab focus · 1-6 tabs · f how friends join"
+            "↑↓ сервер · a добавить · Del убрать · Tab фокус · 1-7 вкладки · f как друзьям зайти",
+            "↑↓ server · a add · Del remove · Tab focus · 1-7 tabs · f how friends join"
         ),
     };
     let line = Line::from(vec![
@@ -941,4 +946,130 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_world(app: &App, f: &mut Frame, area: Rect, focused: bool) {
+    let s = app.sel();
+    let title = tr!("Мир", "World");
+    if s.cfg.kind == Kind::Rcon {
+        return muted_block(
+            f,
+            area,
+            title,
+            focused,
+            tr!("Мир доступен только для локальных серверов", "The world is only available for local servers"),
+        );
+    }
+    let w = &app.world;
+    let Some(info) = &w.info else {
+        let msg = if w.loading { tr!("Считаю размер мира…", "Measuring the world…") } else { "" };
+        return muted_block(f, area, title, focused, msg);
+    };
+    let outer = block(&format!("{title} · {}", info.level_name), focused);
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
+    let mut head: Vec<Line> = vec![];
+    if !info.exists {
+        head.push(Line::styled(
+            tr!(
+                "Мир ещё не создан — он появится при первом запуске сервера",
+                "The world has not been created yet — it appears on the first server start"
+            ),
+            Style::new().fg(theme::WARN),
+        ));
+    } else {
+        let layout = match info.layout {
+            Some(crate::world::Layout::Modern) => tr!("формат 26.x", "26.x layout"),
+            Some(crate::world::Layout::Vanilla) => tr!("формат vanilla", "vanilla layout"),
+            Some(crate::world::Layout::Bukkit) => tr!("формат Bukkit", "Bukkit layout"),
+            None => "",
+        };
+        let mut parts = vec![format!("{} {}", tr!("Всего:", "Total:"), human_bytes(info.total_bytes))];
+        if let Some(v) = &info.version {
+            parts.push(format!("Minecraft {v}"));
+        }
+        if !layout.is_empty() {
+            parts.push(layout.into());
+        }
+        let seed = info
+            .seed
+            .map(|x| x.to_string())
+            .or_else(|| s.prop("level-seed").filter(|x| !x.is_empty()).map(str::to_string));
+        if let Some(seed) = seed {
+            parts.push(format!("{} {seed}", tr!("сид", "seed")));
+        }
+        if let Some(t) = info.last_played {
+            parts.push(format!(
+                "{} {}",
+                tr!("сохранён", "saved"),
+                chrono::DateTime::<chrono::Local>::from(t).format("%d.%m %H:%M")
+            ));
+        }
+        head.push(Line::styled(parts.join(" · "), Style::new().fg(theme::TEXT)));
+    }
+    let chunky = match &w.chunky {
+        Some(_) => Line::styled(
+            tr!("Chunky установлен — p запускает генерацию чанков", "Chunky is installed — p starts pregeneration"),
+            Style::new().fg(theme::MUTED),
+        ),
+        None => Line::styled(
+            tr!(
+                "Для генерации чанков нужен Chunky — p предложит установить",
+                "Pregeneration needs Chunky — p offers to install it"
+            ),
+            Style::new().fg(theme::MUTED),
+        ),
+    };
+    head.push(chunky);
+    if let Some(p) = app.pregen_progress() {
+        let text = if p.finished {
+            let t = p.total_time.map(human_duration).unwrap_or_default();
+            tr!(
+                format!("✓ Генерация {} завершена: {} чанков за {t}", p.world, p.chunks),
+                format!("✓ Pregeneration of {} finished: {} chunks in {t}", p.world, p.chunks)
+            )
+        } else {
+            let eta = p.eta.map(human_duration).unwrap_or_else(|| "?".into());
+            let rate = p.rate.map(|r| format!(" · {r:.0} {}", tr!("чанк/с", "chunks/s"))).unwrap_or_default();
+            tr!(
+                format!("⏳ Генерация {}: {:.1}% · {} чанков · осталось {eta}{rate}", p.world, p.percent, p.chunks),
+                format!("⏳ Pregenerating {}: {:.1}% · {} chunks · {eta} left{rate}", p.world, p.percent, p.chunks)
+            )
+        };
+        head.push(Line::styled(text, Style::new().fg(if p.finished { theme::OK } else { theme::WARN })));
+    }
+    let [top, list_area] =
+        Layout::vertical([Constraint::Length(head.len() as u16 + 1), Constraint::Min(1)]).areas(inner);
+    f.render_widget(Paragraph::new(head), top);
+
+    let rows: Vec<Row> = w
+        .rows()
+        .into_iter()
+        .map(|r| match r {
+            WorldRow::Dim(d) => {
+                let (size, regions) = if d.exists {
+                    (human_bytes(d.size_bytes), d.region_files.to_string())
+                } else {
+                    (tr!("не создан", "not created").into(), String::new())
+                };
+                let style = if d.exists { Style::new().fg(theme::TEXT) } else { Style::new().fg(theme::MUTED) };
+                Row::new(vec![format!("🌍 {}", d.dim.title()), size, regions]).style(style)
+            }
+            WorldRow::Other(name) => Row::new(vec![
+                format!("🗺  {name}"),
+                tr!("другой мир", "other world").into(),
+                tr!("Enter — сделать основным", "Enter — make it main").into(),
+            ])
+            .style(Style::new().fg(theme::MUTED)),
+        })
+        .collect();
+    let table = Table::new(rows, [Constraint::Min(18), Constraint::Length(14), Constraint::Min(8)])
+        .header(
+            Row::new(vec![tr!("Измерение", "Dimension"), tr!("Размер", "Size"), tr!("Регионов", "Regions")])
+                .style(Style::new().fg(theme::MUTED)),
+        )
+        .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
+    let mut st = TableState::default().with_selected(focused.then_some(w.sel));
+    f.render_stateful_widget(table, list_area, &mut st);
 }

@@ -29,7 +29,9 @@ use tokio::sync::mpsc;
 pub use crate::core::human_bytes;
 
 mod panel;
+mod world_tab;
 pub use panel::{Panel, Tone};
+pub use world_tab::{WorldRow, WorldView};
 
 const TOAST_FOR: Duration = Duration::from_secs(5);
 const HISTORY_CAP: usize = 24 * 60;
@@ -50,9 +52,11 @@ pub enum Tab {
     Plugins,
     Settings,
     Backups,
+    World,
 }
 
-pub const TABS: [Tab; 6] = [Tab::Status, Tab::Players, Tab::Access, Tab::Plugins, Tab::Settings, Tab::Backups];
+pub const TABS: [Tab; 7] =
+    [Tab::Status, Tab::Players, Tab::Access, Tab::Plugins, Tab::Settings, Tab::Backups, Tab::World];
 
 impl Tab {
     pub fn title(self) -> &'static str {
@@ -63,6 +67,7 @@ impl Tab {
             Tab::Plugins => tr!("Плагины", "Plugins"),
             Tab::Settings => tr!("Настройки", "Settings"),
             Tab::Backups => tr!("Бэкапы", "Backups"),
+            Tab::World => tr!("Мир", "World"),
         }
     }
 }
@@ -92,6 +97,8 @@ pub enum Action {
     AccessRemove { list: List, name: String },
     ApplyUpdates(Vec<PathBuf>),
     InstallPlugin(Box<crate::plugin_search::InstallPlan>),
+    ResetDimension(crate::world::Dimension),
+    SetLevel(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +136,7 @@ pub enum EditTarget {
     AccessAdd(List),
     Chat,
     LogSearch,
+    PregenRadius(crate::world::Dimension),
 }
 
 pub enum Popup {
@@ -323,6 +331,7 @@ pub struct App {
     backups_at: Option<Instant>,
     pub access: AccessView,
     pub plugins: PluginsView,
+    pub world: WorldView,
     pub logs: LogsView,
     /// Высота области лога из последней отрисовки — для прыжков к совпадениям.
     pub logs_height: Cell<u16>,
@@ -391,6 +400,7 @@ impl App {
                 loaded: None,
                 busy: false,
             },
+            world: WorldView::default(),
             plugins: PluginsView {
                 items: vec![],
                 sel: 0,
@@ -596,6 +606,8 @@ impl App {
             Action::AccessRemove { list, name } => self.access_remove(list, &name),
             Action::ApplyUpdates(paths) => self.apply_updates(paths),
             Action::InstallPlugin(plan) => self.install_plugin(*plan),
+            Action::ResetDimension(d) => self.reset_dimension(d),
+            Action::SetLevel(name) => self.set_level(name),
         }
     }
 
@@ -1106,6 +1118,7 @@ impl App {
         self.backups_sel = 0;
         self.access.sel = 0;
         self.plugins.sel = 0;
+        self.world.sel = 0;
         self.completion = None;
         self.completion_hint = None;
         if self.has_server() {
@@ -1126,6 +1139,7 @@ impl App {
             }
             Tab::Backups => self.refresh_backups(),
             Tab::Plugins => self.refresh_plugins(force),
+            Tab::World => self.refresh_world(force),
             _ => {}
         }
     }
@@ -1552,6 +1566,7 @@ impl App {
                         EditTarget::Property(key) => self.set_property(&key, v.trim()),
                         EditTarget::Opt(o) => self.apply_opt(o, &v),
                         EditTarget::AccessAdd(list) => self.access_add(list, &v),
+                        EditTarget::PregenRadius(dim) => self.run_pregen(dim, &v),
                         EditTarget::LogSearch => {
                             if !v.trim().is_empty() {
                                 self.run_log_search(v.trim().to_string());
@@ -1616,7 +1631,7 @@ impl App {
                 let c = latin(c);
                 match c {
                     'l' | 'L' => return self.toggle_logs(),
-                    '1'..='6' => {
+                    '1'..='7' => {
                         self.focus = Focus::Content;
                         return self.set_tab(TABS[c as usize - '1' as usize]);
                     }
@@ -1699,6 +1714,7 @@ impl App {
                 Tab::Backups => self.backups_sel = step(self.backups_sel, self.backups.len()),
                 Tab::Access => self.access.sel = step(self.access.sel, self.access.entries.len()),
                 Tab::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
+                Tab::World => self.world.sel = step(self.world.sel, self.world.rows().len()),
                 Tab::Status => {}
             },
             Focus::Input => {}
@@ -1898,6 +1914,7 @@ impl App {
                 'u' => self.refresh_plugins(true),
                 _ => {}
             },
+            Tab::World => self.world_char(c),
             Tab::Status => {}
         }
     }
@@ -1917,6 +1934,7 @@ impl App {
             },
             Tab::Plugins => self.ask_apply_updates(false),
             Tab::Access => self.content_char('a'),
+            Tab::World => self.world_enter(),
             _ => {}
         }
     }

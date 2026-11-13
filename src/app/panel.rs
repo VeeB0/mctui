@@ -321,7 +321,7 @@ impl App {
         );
     }
 
-    fn confirm_install(&mut self, plan: InstallPlan) {
+    pub(super) fn confirm_install(&mut self, plan: InstallPlan) {
         let mut text = tr!(
             format!("Установить {} {} ({})?", plan.main.title, plan.main.version, plan.main.file_name),
             format!("Install {} {} ({})?", plan.main.title, plan.main.version, plan.main.file_name)
