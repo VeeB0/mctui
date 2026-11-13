@@ -164,9 +164,13 @@ impl App {
                 );
                 return self.toast(format!("{what}{tail}"), ToastKind::Info);
             }
+            let declined = tr!(
+                "Если отказаться — изменения применятся после minecraft:reload или перезапуска.",
+                "If you decline, the change applies after minecraft:reload or a restart."
+            );
             self.popup = Some(Popup::Confirm {
                 title: tr!("Перезагрузить датапаки", "Reload datapacks").into(),
-                text: format!("{note} {}", reload_lag()),
+                text: format!("{note} {} {declined}", reload_lag()),
                 action: Action::ReloadDatapacks(id),
             });
             // Видно и после отказа (Esc): изменение ещё не применено.

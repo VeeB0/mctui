@@ -607,6 +607,9 @@ async fn datapack_reload_declined_leaves_a_hint() {
         open_datapacks(&mut a);
         key(&mut a, ' ');
         assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::ReloadDatapacks(0), .. })));
+        // Подсказка живёт в самом вопросе: тост исчезнет через 5 с, а вопрос может висеть дольше.
+        let Some(Popup::Confirm { text, .. }) = &a.popup else { unreachable!() };
+        assert!(text.contains("If you decline") && text.contains("minecraft:reload"), "{text}");
         press(&mut a, KeyCode::Esc);
         assert!(a.popup.is_none());
         assert!(sent_commands(&mut rx).is_empty());
