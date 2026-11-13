@@ -486,7 +486,7 @@ fn bundled_java(dir: &Path, required: u32) -> Option<String> {
     })
 }
 
-fn free_name(dir: &Path, base: &str) -> PathBuf {
+pub(crate) fn free_name(dir: &Path, base: &str) -> PathBuf {
     let p = dir.join(base);
     if !p.exists() {
         return p;
