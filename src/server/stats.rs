@@ -154,6 +154,19 @@ pub fn is_stopping(line: &str) -> bool {
     message(line).starts_with("Stopping server")
 }
 
+/// Строка чата: сообщение игрока, `say` / `me`, вход и выход игроков.
+pub fn is_chat(line: &str) -> bool {
+    let m = message(line).trim_start();
+    let m = m.strip_prefix("[Not Secure] ").unwrap_or(m);
+    if let Some(rest) = m.strip_prefix('<') {
+        return rest.split_once("> ").is_some_and(|(n, _)| valid_name(n.trim_start_matches(['~', '.'])));
+    }
+    m.starts_with("[Server] ")
+        || m.starts_with("[Rcon] ")
+        || m.strip_prefix("* ").is_some_and(|r| r.split_once(' ').is_some_and(|(n, _)| valid_name(n)))
+        || player_event(line).is_some()
+}
+
 pub fn version(line: &str) -> Option<String> {
     message(line).strip_prefix("Starting minecraft server version ").map(|v| v.trim().to_string())
 }
@@ -161,6 +174,17 @@ pub fn version(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_lines() {
+        assert!(is_chat("[12:00:00 INFO]: <Steve> hello there"));
+        assert!(is_chat("[12:00:00] [Async Chat Thread - #0/INFO]: [Not Secure] <Alex> hi"));
+        assert!(is_chat("[12:00:00 INFO]: [Server] restart in 5 min"));
+        assert!(is_chat("[12:00:00 INFO]: Steve joined the game"));
+        assert!(is_chat("[12:00:00 INFO]: * Steve waves"));
+        assert!(!is_chat("[12:00:00 INFO]: Done (3.2s)! For help, type \"help\""));
+        assert!(!is_chat("[12:00:00 INFO]: <not a name> x"));
+    }
 
     #[test]
     fn list_variants() {

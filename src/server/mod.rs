@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::time::Instant;
 use supervisor::CrashPolicy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Status {
     Offline,
     Starting,
@@ -30,15 +30,15 @@ pub enum Status {
 impl Status {
     pub fn label(self) -> &'static str {
         match self {
-            Status::Offline => "остановлен",
-            Status::Starting => "запускается",
-            Status::Running => "работает",
-            Status::Stopping => "останавливается",
-            Status::Crashed => "упал",
-            Status::Restarting => "перезапуск…",
-            Status::Connecting => "подключение…",
-            Status::Online => "онлайн",
-            Status::Unreachable => "недоступен",
+            Status::Offline => crate::tr!("остановлен", "stopped"),
+            Status::Starting => crate::tr!("запускается", "starting"),
+            Status::Running => crate::tr!("работает", "running"),
+            Status::Stopping => crate::tr!("останавливается", "stopping"),
+            Status::Crashed => crate::tr!("упал", "crashed"),
+            Status::Restarting => crate::tr!("перезапуск…", "restarting…"),
+            Status::Connecting => crate::tr!("подключение…", "connecting…"),
+            Status::Online => crate::tr!("онлайн", "online"),
+            Status::Unreachable => crate::tr!("недоступен", "unreachable"),
         }
     }
 }
@@ -91,6 +91,20 @@ pub struct ServerState {
     pub response: Vec<String>,
     pub response_until: Option<Instant>,
     pub last_poll: Option<Instant>,
+    // --- фоновая служба: расписания, восстановление, графики ---
+    pub started_unix: Option<i64>,
+    pub history: VecDeque<crate::proto::Sample>,
+    pub last_sample: Option<Instant>,
+    /// Кто-то играл с прошлого авто-бэкапа (иначе авто-бэкап пропускается).
+    pub played_since_backup: bool,
+    pub next_backup: Option<chrono::DateTime<chrono::Local>>,
+    pub next_restart: Option<chrono::DateTime<chrono::Local>>,
+    /// Какие предупреждения о рестарте уже отправлены (секунд до рестарта).
+    pub restart_warned: BTreeSet<u64>,
+    /// Восстановить из архива после остановки; bool — запустить сервер после восстановления.
+    pub pending_restore: Option<(std::path::PathBuf, bool)>,
+    pub restoring: bool,
+    pub crash_gave_up: bool,
 }
 
 impl ServerState {
@@ -129,6 +143,16 @@ impl ServerState {
             response: vec![],
             response_until: None,
             last_poll: None,
+            started_unix: None,
+            history: VecDeque::new(),
+            last_sample: None,
+            played_since_backup: false,
+            next_backup: None,
+            next_restart: None,
+            restart_warned: BTreeSet::new(),
+            pending_restore: None,
+            restoring: false,
+            crash_gave_up: false,
         };
         s.reload_props();
         s.reload_ops();
@@ -148,8 +172,40 @@ impl ServerState {
         }
     }
 
-    pub fn is_op(&self, name: &str) -> bool {
-        self.ops.contains(&name.to_lowercase())
+    /// Снимок для окна TUI.
+    pub fn view(&self) -> crate::proto::ServerView {
+        use crate::proto::RconView;
+        crate::proto::ServerView {
+            id: self.id,
+            cfg: self.cfg.clone(),
+            status: self.status,
+            pid: self.proc.as_ref().map(|p| p.pid),
+            rcon: match &self.rcon_state {
+                RconState::Off => RconView::Off,
+                RconState::Connecting => RconView::Connecting,
+                RconState::Connected => RconView::Connected,
+                RconState::Error(e) => RconView::Error(e.clone()),
+            },
+            players: self.players.iter().cloned().collect(),
+            players_from_rcon: self.players_source == PlayersSource::Rcon,
+            ops: self.ops.iter().cloned().collect(),
+            max_players: self.max_players,
+            tps: self.tps,
+            cpu: self.cpu,
+            mem: self.mem,
+            cpu_hist: self.cpu_hist.iter().copied().collect(),
+            started_unix: self.started_unix,
+            version: self.version.clone(),
+            last_exit: self.last_exit.clone(),
+            backup_progress: self.backup_progress.clone(),
+            last_backup: self.last_backup.clone(),
+            needs_restart: self.needs_restart,
+            response: self.response.clone(),
+            restart_in: self.restart_at.map(|t| t.saturating_duration_since(Instant::now()).as_secs()),
+            next_backup_unix: self.next_backup.map(|t| t.timestamp()),
+            next_restart_unix: self.next_restart.map(|t| t.timestamp()),
+            crash_gave_up: self.crash_gave_up,
+        }
     }
 
     /// Учитывает «Made X a server operator» из лога или ответа RCON — сразу, не дожидаясь ops.json.
@@ -202,6 +258,7 @@ impl ServerState {
         self.mem = None;
         self.cpu_hist.clear();
         self.started_at = None;
+        self.started_unix = None;
         self.stop_deadline = None;
     }
 }

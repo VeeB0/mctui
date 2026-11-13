@@ -3,8 +3,12 @@
 use crate::app::TABS;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-pub const LOGS_BTN: &str = " L · Логи ";
-pub const BACK_BTN: &str = " Esc · Назад ";
+pub fn logs_btn() -> &'static str {
+    crate::tr!(" L · Логи ", " L · Logs ")
+}
+pub fn back_btn() -> &'static str {
+    crate::tr!(" Esc · Назад ", " Esc · Back ")
+}
 pub const SIDEBAR_W: u16 = 26;
 
 pub fn width(s: &str) -> u16 {
@@ -33,7 +37,7 @@ pub fn main(area: Rect) -> Main {
     .areas(area);
     let [sidebar, right] = Layout::horizontal([Constraint::Length(SIDEBAR_W), Constraint::Min(20)]).areas(body);
     let [tabs, content] = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(right);
-    Main { header, logs_btn: button_rect(header, LOGS_BTN), sidebar, tabs, content, response, input, hints }
+    Main { header, logs_btn: button_rect(header, logs_btn()), sidebar, tabs, content, response, input, hints }
 }
 
 pub struct Logs {
@@ -50,7 +54,7 @@ pub fn logs(area: Rect) -> Logs {
         Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1), Constraint::Length(1)])
             .areas(area);
     let [sources, view] = Layout::horizontal([Constraint::Length(SIDEBAR_W + 4), Constraint::Min(20)]).areas(body);
-    Logs { header, back_btn: button_rect(header, BACK_BTN), sources, view, footer, hints }
+    Logs { header, back_btn: button_rect(header, back_btn()), sources, view, footer, hints }
 }
 
 fn button_rect(header: Rect, label: &str) -> Rect {
@@ -76,7 +80,7 @@ pub fn setup_fields(area: Rect, n: usize) -> Vec<Rect> {
 
 /// Заголовки вкладок: " 1 Статус " │ " 2 Игроки " …
 pub fn tab_label(i: usize) -> String {
-    format!(" {} {} ", i + 1, TABS[i].1)
+    format!(" {} {} ", i + 1, TABS[i].title())
 }
 
 pub fn tab_at(tabs: Rect, x: u16) -> Option<usize> {

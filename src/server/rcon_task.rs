@@ -75,7 +75,7 @@ async fn run(
                         m = rx.recv() => match m {
                             None => return,
                             Some((kind, cmd)) => {
-                                emit(RconEvent::Response { kind, cmd, result: Err("нет подключения RCON".into()) });
+                                emit(RconEvent::Response { kind, cmd, result: Err(crate::tr!("нет подключения RCON", "no RCON connection").into()) });
                             }
                         }
                     }

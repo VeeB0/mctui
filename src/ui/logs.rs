@@ -1,10 +1,11 @@
 //! Отдельный экран логов: живой вывод, latest.log, архивы *.log.gz.
 
-use super::layout::{self, BACK_BTN};
+use super::layout;
 use super::main_screen::{draw_toast, status_color};
 use super::theme;
 use crate::app::{App, LogSource};
 use crate::log::{Level, LogLine};
+use crate::tr;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Style, Stylize};
@@ -26,7 +27,7 @@ pub fn draw(app: &App, f: &mut Frame) {
 
     // Шапка
     let left = Line::from(vec![
-        Span::styled(" Логи ", Style::new().fg(theme::ACCENT).bold()),
+        Span::styled(tr!(" Логи ", " Logs "), Style::new().fg(theme::ACCENT).bold()),
         Span::styled("│ ", Style::new().fg(theme::BORDER)),
         Span::styled(s.cfg.name.clone(), Style::new().fg(theme::TEXT).bold()),
         Span::raw(" "),
@@ -41,7 +42,7 @@ pub fn draw(app: &App, f: &mut Frame) {
         Rect { x: l.header.x + lw, width: l.back_btn.x.saturating_sub(l.header.x + lw + 1), ..l.header },
     );
     f.render_widget(
-        Paragraph::new(Span::styled(BACK_BTN, Style::new().fg(theme::BUTTON_FG).bg(theme::BUTTON_BG).bold())),
+        Paragraph::new(Span::styled(layout::back_btn(), Style::new().fg(theme::BUTTON_FG).bg(theme::BUTTON_BG).bold())),
         l.back_btn,
     );
 
@@ -59,7 +60,7 @@ pub fn draw(app: &App, f: &mut Frame) {
         .collect();
     let border = if app.logs.focus_list { theme::BORDER_FOCUS } else { theme::BORDER };
     let list = List::new(items)
-        .block(Block::bordered().title(" Источник ").border_style(Style::new().fg(border)))
+        .block(Block::bordered().title(tr!(" Источник ", " Source ")).border_style(Style::new().fg(border)))
         .highlight_style(Style::new().bg(theme::HIGHLIGHT_BG));
     let mut st = ListState::default().with_selected(Some(app.logs.source_sel));
     f.render_stateful_widget(list, l.sources, &mut st);
@@ -86,12 +87,22 @@ pub fn draw(app: &App, f: &mut Frame) {
         f.render_widget(Paragraph::new(err.clone()).fg(theme::ERROR), inner);
     } else if total == 0 {
         let msg = match app.logs.sources.get(app.logs.active) {
-            Some((_, LogSource::Live)) if s.cfg.kind == crate::config::Kind::Rcon => {
-                "Живой лог по RCON недоступен. Здесь — история команд этой сессии.\nЧтобы видеть файл лога, задайте log_path в servers.toml (если сервер на этой машине)."
+            Some((_, LogSource::Live)) if s.cfg.kind == crate::config::Kind::Rcon => tr!(
+                "Живой лог по RCON недоступен. Здесь — история команд этой сессии.\nЧтобы видеть файл лога, задайте log_path в servers.toml (если сервер на этой машине).",
+                "A live log is not available over RCON. This shows the commands of this session.\nTo see the log file, set log_path in servers.toml (if the server is on this machine)."
+            ),
+            Some((_, LogSource::Live)) => tr!(
+                "Вывода пока нет. Запустите сервер (Ctrl+S) или откройте latest.log слева.",
+                "No output yet. Start the server (Ctrl+S) or open latest.log on the left."
+            ),
+            Some((_, LogSource::Chat)) => tr!(
+                "Сообщений чата пока нет. Enter или m — написать в чат (say).",
+                "No chat messages yet. Enter or m — write to chat (say)."
+            ),
+            _ if app.logs.filter != crate::app::LevelFilter::All => {
+                tr!("Нет строк для выбранного фильтра (f — сменить)", "No lines match the filter (f to change)")
             }
-            Some((_, LogSource::Live)) => "Вывода пока нет. Запустите сервер (Ctrl+S) или откройте latest.log слева.",
-            _ if app.logs.filter != crate::app::LevelFilter::All => "Нет строк для выбранного фильтра (f — сменить)",
-            _ => "Файл пуст",
+            _ => tr!("Файл пуст", "The file is empty"),
         };
         f.render_widget(Paragraph::new(msg).fg(theme::MUTED), inner);
     } else {
@@ -104,28 +115,48 @@ pub fn draw(app: &App, f: &mut Frame) {
     // Нижняя строка состояния / поиск
     if let Some(inp) = &app.logs.search_input {
         let line = Line::from(vec![
-            Span::styled(" Поиск: ", Style::new().fg(theme::ACCENT).bold()),
+            Span::styled(tr!(" Поиск: ", " Find: "), Style::new().fg(theme::ACCENT).bold()),
             Span::raw(inp.value.clone()),
         ]);
         f.render_widget(Paragraph::new(line), l.footer);
-        f.set_cursor_position((l.footer.x + 8 + inp.cursor() as u16, l.footer.y));
+        let w = layout::width(tr!(" Поиск: ", " Find: "));
+        f.set_cursor_position((l.footer.x + w + inp.cursor() as u16, l.footer.y));
     } else {
-        let mut parts = vec![format!(" строк: {total}"), format!("фильтр: {}", app.logs.filter.label())];
+        let mut parts = vec![tr!(format!(" строк: {total}"), format!(" lines: {total}"))];
+        if !matches!(app.logs.active_source(), Some(LogSource::Chat)) {
+            parts.push(tr!(
+                format!("фильтр: {}", app.logs.filter.label()),
+                format!("filter: {}", app.logs.filter.label())
+            ));
+        }
         if let Some(q) = query {
             let pos = app.logs.match_cursor.map(|c| (c + 1).to_string()).unwrap_or_else(|| "-".into());
-            parts.push(format!("поиск «{q}»: {pos}/{}", matches.len()));
+            parts.push(tr!(
+                format!("поиск «{q}»: {pos}/{}", matches.len()),
+                format!("search “{q}”: {pos}/{}", matches.len())
+            ));
         }
         parts.push(if scroll == 0 {
-            "▼ следим за концом".into()
+            tr!("▼ следим за концом", "▼ following the end").into()
         } else {
-            format!("↑ пролистано на {scroll}")
+            tr!(format!("↑ пролистано на {scroll}"), format!("↑ scrolled up {scroll}"))
         });
         if app.logs.hscroll > 0 {
             parts.push(format!("→ {}", app.logs.hscroll));
         }
         f.render_widget(Paragraph::new(parts.join(" · ")).fg(theme::MUTED), l.footer);
     }
-    let hints = " Esc/L назад · ↑↓ PgUp PgDn прокрутка · g/G начало/конец · ←→ по горизонтали · / поиск · n/N выше/ниже · f фильтр · Tab источники · r обновить";
+    let hints = if matches!(app.logs.active_source(), Some(LogSource::Chat)) {
+        tr!(
+            " Esc/L назад · Enter/m написать в чат · ↑↓ PgUp PgDn прокрутка · / поиск · Tab источники",
+            " Esc/L back · Enter/m write to chat · ↑↓ PgUp PgDn scroll · / search · Tab sources"
+        )
+    } else {
+        tr!(
+            " Esc/L назад · ↑↓ PgUp PgDn прокрутка · g/G начало/конец · ←→ по горизонтали · / поиск · n/N выше/ниже · f фильтр · c чат · Tab источники · r обновить",
+            " Esc/L back · ↑↓ PgUp PgDn scroll · g/G top/end · ←→ horizontal · / search · n/N prev/next · f filter · c chat · Tab sources · r reload"
+        )
+    };
     f.render_widget(Paragraph::new(hints).fg(theme::TEXT), l.hints);
 }
 

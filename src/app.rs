@@ -1,25 +1,35 @@
-//! Состояние приложения и обработка событий (Update в терминах TEA).
+//! Окно TUI: состояние интерфейса и обработка ввода (Update в терминах TEA).
+//!
+//! Серверами управляет фоновая служба ([`crate::core`]); окно получает от неё снимки состояния,
+//! строки логов и историю графиков, а действия отправляет запросами [`Request`].
+//! Файлы сервера (server.properties, списки доступа, плагины, бэкапы) окно читает и правит само.
 
-use crate::backup::{self, BackupInfo, BackupJob};
-use crate::config::Kind;
-use crate::event::{AppEvent, BackupEvent, RconEvent, ReqKind};
+use crate::access::{self, List};
+use crate::backup::{self, BackupInfo};
+use crate::client::Client;
+use crate::config::{Kind, ServerConfig};
+use crate::event::{AppEvent, UiTask};
 use crate::input::TextInput;
-use crate::log::{Level, LogLine};
-use crate::server::local::LocalProc;
-use crate::server::stats::{self, PlayerEvent};
-use crate::server::{PlayersSource, RconState, ServerState, Status, rcon_task};
-use crate::setup::{Outcome as SetupOutcome, Setup};
+use crate::log::{Level, LogBuffer, LogLine};
+use crate::plugins::{self, PluginInfo, UpdateInfo};
+use crate::properties::Properties;
+use crate::proto::{Msg, NoticeKind, Request, Sample, ServerView};
+use crate::server::Status;
+use crate::setup::{Outcome as SetupOutcome, Setup, Versions};
+use crate::tr;
 use crate::ui::layout;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use std::cell::Cell;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 
-const POLL_EVERY: Duration = Duration::from_secs(10);
-const RESPONSE_WINDOW: Duration = Duration::from_millis(1500);
+pub use crate::core::human_bytes;
+
 const TOAST_FOR: Duration = Duration::from_secs(5);
+const HISTORY_CAP: usize = 24 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -33,12 +43,26 @@ pub enum Screen {
 pub enum Tab {
     Status,
     Players,
+    Access,
+    Plugins,
     Settings,
     Backups,
 }
 
-pub const TABS: [(Tab, &str); 4] =
-    [(Tab::Status, "Статус"), (Tab::Players, "Игроки"), (Tab::Settings, "Настройки"), (Tab::Backups, "Бэкапы")];
+pub const TABS: [Tab; 6] = [Tab::Status, Tab::Players, Tab::Access, Tab::Plugins, Tab::Settings, Tab::Backups];
+
+impl Tab {
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::Status => tr!("Статус", "Status"),
+            Tab::Players => tr!("Игроки", "Players"),
+            Tab::Access => tr!("Доступ", "Access"),
+            Tab::Plugins => tr!("Плагины", "Plugins"),
+            Tab::Settings => tr!("Настройки", "Settings"),
+            Tab::Backups => tr!("Бэкапы", "Backups"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -55,24 +79,70 @@ pub enum ToastKind {
 }
 
 pub enum Action {
-    QuitStopAll,
-    ForceKill(usize),
+    Kill(usize),
     RemoteStop(usize),
-    Command { idx: usize, cmd: String },
+    Command { id: usize, cmd: String },
     DeleteBackup(PathBuf),
-    EnableRcon(usize),
+    Restore { id: usize, path: PathBuf },
+    EnableRcon,
     RemoveServer(usize),
+    AccessRemove { list: List, name: String },
+    ApplyUpdates(Vec<PathBuf>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opt {
+    Autostart,
+    AutoRestart,
+    BackupEvery,
+    BackupKeep,
+    RestartTimes,
+    Language,
+}
+
+impl Opt {
+    pub fn label(self) -> &'static str {
+        match self {
+            Opt::Autostart => tr!("Запускать вместе со службой", "Start with the service"),
+            Opt::AutoRestart => tr!("Авто-рестарт при падении", "Restart after a crash"),
+            Opt::BackupEvery => tr!("Авто-бэкап, каждые N ч (0 — выкл)", "Auto backup every N h (0 = off)"),
+            Opt::BackupKeep => tr!("Хранить бэкапов", "Backups to keep"),
+            Opt::RestartTimes => tr!("Рестарт по расписанию (ЧЧ:ММ, …)", "Scheduled restarts (HH:MM, …)"),
+            Opt::Language => tr!("Язык интерфейса", "Interface language"),
+        }
+    }
+}
+
+pub enum EditTarget {
+    Property(String),
+    Opt(Opt),
+    AccessAdd(List),
+    Chat,
 }
 
 pub enum Popup {
-    Confirm { title: String, text: String, action: Action },
-    Edit { title: String, input: TextInput, key: String },
+    Confirm {
+        title: String,
+        text: String,
+        action: Action,
+    },
+    Edit {
+        title: String,
+        input: TextInput,
+        target: EditTarget,
+    },
+    /// Выход при работающих серверах: закрыть окно или остановить всё.
+    Quit {
+        running: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum LogSource {
-    /// Буфер вывода в памяти (живой лог процесса или сессия RCON).
+    /// Вывод процесса из службы (или сессия RCON).
     Live,
+    /// Только сообщения чата из живого вывода.
+    Chat,
     File(PathBuf),
 }
 
@@ -86,7 +156,7 @@ pub enum LevelFilter {
 impl LevelFilter {
     pub fn label(self) -> &'static str {
         match self {
-            LevelFilter::All => "все",
+            LevelFilter::All => tr!("все", "all"),
             LevelFilter::WarnUp => "WARN+",
             LevelFilter::ErrorOnly => "ERROR",
         }
@@ -133,10 +203,93 @@ impl LogsView {
             focus_list: false,
         }
     }
+
+    pub fn active_source(&self) -> Option<&LogSource> {
+        self.sources.get(self.active).map(|s| &s.1)
+    }
+}
+
+/// Сервер глазами окна: снимок от службы + то, что окно держит само.
+pub struct ServerUi {
+    pub view: ServerView,
+    pub log: LogBuffer,
+    pub history: VecDeque<Sample>,
+    pub props: Option<Properties>,
+    pub props_error: Option<String>,
+}
+
+impl std::ops::Deref for ServerUi {
+    type Target = ServerView;
+    fn deref(&self) -> &ServerView {
+        &self.view
+    }
+}
+
+impl ServerUi {
+    fn new(view: ServerView) -> Self {
+        let mut s =
+            Self { view, log: LogBuffer::new(10_000), history: VecDeque::new(), props: None, props_error: None };
+        s.reload_props();
+        s
+    }
+
+    pub fn reload_props(&mut self) {
+        let Some(path) = self.view.cfg.properties_path() else {
+            self.props = None;
+            return;
+        };
+        match Properties::load(&path) {
+            Ok(p) => {
+                self.props = Some(p);
+                self.props_error = None;
+            }
+            Err(e) => {
+                self.props = None;
+                self.props_error = Some(format!("{}: {e}", path.display()));
+            }
+        }
+    }
+
+    pub fn prop(&self, key: &str) -> Option<&str> {
+        self.props.as_ref().and_then(|p| p.get(key))
+    }
+
+    /// Можно ли отправлять команды: процесс запущен или RCON подключён.
+    pub fn accepts_commands(&self) -> bool {
+        self.running() || self.rcon == crate::proto::RconView::Connected
+    }
+}
+
+pub struct AccessView {
+    pub list: List,
+    pub entries: Vec<access::Entry>,
+    pub sel: usize,
+    pub error: Option<String>,
+    /// Для какого сервера/списка и с каким mtime файла загружено.
+    loaded: Option<(usize, List, Option<SystemTime>)>,
+    pub busy: bool,
+}
+
+pub struct PluginsView {
+    pub items: Vec<PluginInfo>,
+    pub sel: usize,
+    pub updates: HashMap<PathBuf, UpdateInfo>,
+    pub checking: bool,
+    pub checked: bool,
+    pub busy: Option<String>,
+    loaded_for: Option<usize>,
+}
+
+/// Состояние автодополнения по Tab (повторный Tab — следующий вариант).
+pub struct Completion {
+    base: String,
+    items: Vec<String>,
+    idx: usize,
+    applied: String,
 }
 
 pub struct App {
-    pub servers: Vec<ServerState>,
+    pub servers: Vec<ServerUi>,
     pub selected: usize,
     pub screen: Screen,
     pub tab: Tab,
@@ -144,14 +297,20 @@ pub struct App {
     pub input: TextInput,
     pub history: Vec<String>,
     pub hist_pos: Option<usize>,
+    pub completion: Option<Completion>,
+    /// Варианты автодополнения для строки подсказок.
+    pub completion_hint: Option<String>,
     pub popup: Option<Popup>,
     pub toast: Option<(String, ToastKind, Instant)>,
-    pub quitting: bool,
     pub should_quit: bool,
+    pub exit_message: Option<String>,
     pub players_sel: usize,
     pub settings_sel: usize,
     pub backups: Vec<BackupInfo>,
     pub backups_sel: usize,
+    backups_at: Option<Instant>,
+    pub access: AccessView,
+    pub plugins: PluginsView,
     pub logs: LogsView,
     /// Высота области лога из последней отрисовки — для прыжков к совпадениям.
     pub logs_height: Cell<u16>,
@@ -161,10 +320,18 @@ pub struct App {
     /// Новая версия на GitHub, если есть.
     pub update_available: Option<String>,
     pub language: Option<String>,
-    next_id: usize,
-    rcon_seq: u64,
+    /// Связь со службой установлена и пришёл первый снимок.
+    pub connected: bool,
+    pub got_state: bool,
+    pub daemon_error: Option<String>,
+    pub daemon_version: Option<String>,
+    /// Служба другой версии и занята серверами — показываем предупреждение.
+    pub daemon_outdated: bool,
+    version_check_pending: bool,
+    /// После добавления сервера выбрать первый с id больше этого.
+    select_new_after: Option<usize>,
+    client: Client,
     tx: mpsc::UnboundedSender<AppEvent>,
-    sys: Option<sysinfo::System>,
 }
 
 /// Хоткеи работают и в русской раскладке: ЙЦУКЕН → QWERTY.
@@ -182,244 +349,158 @@ pub fn latin(c: char) -> char {
 }
 
 impl App {
-    pub fn new(cfg: crate::config::Config, config_path: PathBuf, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
-        let language = cfg.language.clone();
-        let servers: Vec<ServerState> =
-            cfg.servers.into_iter().enumerate().map(|(i, c)| ServerState::new(c, i + 1)).collect();
-        let first_run = servers.is_empty();
-        let mut app = Self {
-            language,
-            next_id: servers.len() + 1,
-            rcon_seq: 0,
-            setup: first_run.then(|| Setup::new(true)),
-            config_path,
-            update_available: None,
-            servers,
+    pub fn new(config_path: PathBuf, client: Client, tx: mpsc::UnboundedSender<AppEvent>) -> Self {
+        let language = crate::config::Config::load(Some(config_path.clone())).ok().and_then(|(c, _)| c.language);
+        Self {
+            servers: vec![],
             selected: 0,
-            screen: if first_run { Screen::Setup } else { Screen::Main },
+            screen: Screen::Main,
             tab: Tab::Status,
             focus: Focus::Sidebar,
             input: TextInput::default(),
             history: vec![],
             hist_pos: None,
+            completion: None,
+            completion_hint: None,
             popup: None,
             toast: None,
-            quitting: false,
             should_quit: false,
+            exit_message: None,
             players_sel: 0,
             settings_sel: 0,
             backups: vec![],
             backups_sel: 0,
+            backups_at: None,
+            access: AccessView {
+                list: List::Whitelist,
+                entries: vec![],
+                sel: 0,
+                error: None,
+                loaded: None,
+                busy: false,
+            },
+            plugins: PluginsView {
+                items: vec![],
+                sel: 0,
+                updates: HashMap::new(),
+                checking: false,
+                checked: false,
+                busy: None,
+                loaded_for: None,
+            },
             logs: LogsView::new(),
             logs_height: Cell::new(20),
             area: Rect::default(),
+            setup: None,
+            config_path,
+            update_available: None,
+            language,
+            connected: false,
+            got_state: false,
+            daemon_error: None,
+            daemon_version: None,
+            daemon_outdated: false,
+            version_check_pending: false,
+            select_new_after: None,
+            client,
             tx,
-            sys: sysinfo::System::new().ok(),
-        };
-        for i in 0..app.servers.len() {
-            if app.servers[i].cfg.kind == Kind::Rcon {
-                app.connect_rcon(i);
-            }
         }
-        app
     }
 
-    pub fn sel(&self) -> &ServerState {
-        &self.servers[self.selected]
+    pub fn has_server(&self) -> bool {
+        !self.servers.is_empty()
     }
 
-    fn sel_mut(&mut self) -> &mut ServerState {
-        &mut self.servers[self.selected]
+    pub fn sel(&self) -> &ServerUi {
+        &self.servers[self.selected.min(self.servers.len().saturating_sub(1))]
+    }
+
+    fn sel_mut(&mut self) -> &mut ServerUi {
+        let i = self.selected.min(self.servers.len().saturating_sub(1));
+        &mut self.servers[i]
+    }
+
+    fn sel_id(&self) -> Option<usize> {
+        self.servers.get(self.selected).map(|s| s.id)
     }
 
     pub fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
         self.toast = Some((msg.into(), kind, Instant::now()));
     }
 
+    fn send(&self, r: Request) {
+        self.client.send(r);
+    }
+
+    /// Запуск блокирующей работы в фоне; результат применяется к окну.
+    fn spawn_task<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+        apply: impl FnOnce(&mut App, T) + Send + 'static,
+    ) {
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let v = work();
+            let _ = tx.send(AppEvent::Ui(UiTask(Box::new(move |app: &mut App| apply(app, v)))));
+        });
+    }
+
     // ───────────────────────────── серверные операции ─────────────────────────────
 
-    fn connect_rcon(&mut self, idx: usize) {
-        let s = &mut self.servers[idx];
-        let (host, port, password) = match s.cfg.kind {
-            Kind::Rcon => match s.cfg.rcon_password() {
-                Some(p) => (s.cfg.host.clone(), s.cfg.port, p),
-                None => {
-                    s.status = Status::Unreachable;
-                    s.rcon_state = RconState::Error("не задан пароль (password / password_env)".into());
-                    return;
-                }
-            },
-            Kind::Local => {
-                s.reload_props();
-                if s.prop("enable-rcon") != Some("true") {
-                    return;
-                }
-                let pass = s.prop("rcon.password").unwrap_or("").to_string();
-                if pass.is_empty() {
-                    s.rcon_state = RconState::Error("rcon.password пустой".into());
-                    return;
-                }
-                let port = s.prop("rcon.port").and_then(|p| p.parse().ok()).unwrap_or(25575);
-                ("127.0.0.1".to_string(), port, pass)
-            }
-        };
-        self.rcon_seq += 1;
-        s.rcon_state = RconState::Connecting;
-        if s.cfg.kind == Kind::Rcon {
-            s.status = Status::Connecting;
-        }
-        s.rcon = Some(rcon_task::spawn(s.id, self.rcon_seq, host, port, password, self.tx.clone()));
-    }
-
-    pub fn start(&mut self, idx: usize) {
-        let s = &mut self.servers[idx];
-        if s.cfg.kind == Kind::Rcon {
-            self.connect_rcon(idx);
-            self.toast("переподключение RCON…", ToastKind::Info);
-            return;
-        }
-        if s.proc.is_some() {
-            let msg = format!("{} уже запущен", s.cfg.name);
-            self.toast(msg, ToastKind::Info);
-            return;
-        }
-        match LocalProc::spawn(s.id, &s.cfg, self.tx.clone()) {
-            Ok(p) => {
-                s.log.push(&format!("──────── mctui: запуск {} (pid {}) ────────", s.cfg.command.join(" "), p.pid));
-                s.proc = Some(p);
-                s.status = Status::Starting;
-                s.started_at = Some(Instant::now());
-                s.user_stop = false;
-                s.restart_after_stop = false;
-                s.restart_at = None;
-                s.needs_restart = false;
-                s.players.clear();
-                s.reload_props();
-                let name = s.cfg.name.clone();
-                self.toast(format!("{name}: запуск"), ToastKind::Info);
-            }
-            Err(e) => {
-                s.status = Status::Crashed;
-                let msg = format!("{e:#}");
-                s.log.push(&format!("mctui: {msg}"));
-                self.toast(msg, ToastKind::Error);
-            }
+    pub fn start(&mut self) {
+        if let Some(id) = self.sel_id() {
+            self.send(Request::Start { id });
         }
     }
 
-    pub fn stop(&mut self, idx: usize, restart: bool) {
-        let s = &mut self.servers[idx];
-        if s.cfg.kind == Kind::Rcon {
-            if restart {
-                self.toast("перезапуск удалённого сервера по RCON не поддерживается", ToastKind::Error);
-            } else {
-                self.popup = Some(Popup::Confirm {
-                    title: "Остановка".into(),
-                    text: format!("Отправить stop на удалённый сервер «{}»?", s.cfg.name),
-                    action: Action::RemoteStop(idx),
-                });
-            }
+    pub fn stop(&mut self, restart: bool) {
+        if !self.has_server() {
             return;
         }
-        if s.status == Status::Restarting {
-            s.restart_at = None;
-            s.status = Status::Offline;
-            self.toast("авто-рестарт отменён", ToastKind::Info);
-            return;
-        }
-        let Some(p) = &s.proc else {
-            if restart {
-                self.start(idx);
-            } else {
-                self.toast("сервер не запущен", ToastKind::Info);
-            }
-            return;
-        };
-        if s.status == Status::Stopping {
+        let s = self.sel();
+        let id = s.id;
+        if s.cfg.kind == Kind::Rcon && !restart {
             self.popup = Some(Popup::Confirm {
-                title: "Принудительно".into(),
-                text: format!(
-                    "«{}» уже останавливается. Убить процесс (kill -9)? Несохранённые данные пропадут.",
-                    s.cfg.name
+                title: tr!("Остановка", "Stop").into(),
+                text: tr!(
+                    format!("Отправить stop на удалённый сервер «{}»?", s.cfg.name),
+                    format!("Send stop to the remote server “{}”?", s.cfg.name)
                 ),
-                action: Action::ForceKill(idx),
+                action: Action::RemoteStop(id),
             });
             return;
         }
-        p.send("stop");
-        s.user_stop = true;
-        s.restart_after_stop = restart;
-        s.status = Status::Stopping;
-        s.stop_deadline = Some(Instant::now() + Duration::from_secs(s.cfg.stop_timeout_secs));
-        let name = s.cfg.name.clone();
-        self.toast(format!("{name}: {}", if restart { "перезапуск" } else { "остановка" }), ToastKind::Info);
+        if s.status == Status::Stopping && s.running() {
+            self.popup = Some(Popup::Confirm {
+                title: tr!("Принудительно", "Force").into(),
+                text: tr!(
+                    format!(
+                        "«{}» уже останавливается. Убить процесс (kill -9)? Несохранённые данные пропадут.",
+                        s.cfg.name
+                    ),
+                    format!(
+                        "“{}” is already stopping. Kill the process (kill -9)? Unsaved data will be lost.",
+                        s.cfg.name
+                    )
+                ),
+                action: Action::Kill(id),
+            });
+            return;
+        }
+        self.send(Request::Stop { id, restart });
     }
 
-    pub fn backup(&mut self, idx: usize) {
-        let s = &mut self.servers[idx];
-        if s.cfg.kind == Kind::Rcon {
-            self.toast("бэкап доступен только для локальных серверов", ToastKind::Error);
-            return;
-        }
-        if s.backup_progress.is_some() {
-            self.toast("бэкап уже выполняется", ToastKind::Info);
-            return;
-        }
-        if s.status == Status::Starting || s.status == Status::Stopping {
-            self.toast("дождитесь окончания запуска/остановки", ToastKind::Info);
-            return;
-        }
-        let job = BackupJob {
-            id: s.id,
-            name: s.cfg.name.clone(),
-            root: s.cfg.dir().to_path_buf(),
-            paths: s.cfg.backup_paths.clone(),
-            backup_dir: s.cfg.backup_dir(),
-            keep: s.cfg.backup_keep,
-            live: s.proc.as_ref().map(|p| (p.stdin(), p.lines.subscribe())),
-        };
-        s.backup_progress = Some("подготовка…".into());
-        tokio::spawn(backup::run(job, self.tx.clone()));
-    }
-
-    /// Отправка команды серверу. Локальный — через stdin, RCON — через подключение.
-    fn send_command(&mut self, idx: usize, cmd: &str, kind: ReqKind) -> Result<(), String> {
-        let cmd = cmd.trim().trim_start_matches('/').to_string();
-        let s = &mut self.servers[idx];
-        match s.cfg.kind {
-            Kind::Local => {
-                let Some(p) = &s.proc else {
-                    return Err("сервер не запущен".into());
-                };
-                if !p.send(&cmd) {
-                    return Err("stdin процесса закрыт".into());
-                }
-                if cmd == "stop" || cmd == "end" {
-                    s.user_stop = true;
-                    s.status = Status::Stopping;
-                    s.stop_deadline = Some(Instant::now() + Duration::from_secs(s.cfg.stop_timeout_secs));
-                }
-                if kind == ReqKind::User {
-                    s.response = vec![format!("> {cmd}")];
-                    s.response_until = Some(Instant::now() + RESPONSE_WINDOW);
-                }
-                Ok(())
-            }
-            Kind::Rcon => {
-                let Some(r) = &s.rcon else {
-                    return Err("нет подключения RCON".into());
-                };
-                if kind == ReqKind::User {
-                    s.response = vec![format!("> {cmd}"), "…".into()];
-                }
-                if r.send(kind, &cmd) { Ok(()) } else { Err("задача RCON завершилась".into()) }
-            }
+    pub fn backup(&mut self) {
+        if let Some(id) = self.sel_id() {
+            self.send(Request::Backup { id });
         }
     }
 
     fn submit_input(&mut self) {
         let cmd = self.input.take();
-        if cmd.trim().is_empty() {
+        self.completion = None;
+        self.completion_hint = None;
+        if cmd.trim().is_empty() || !self.has_server() {
             return;
         }
         if self.history.last() != Some(&cmd) {
@@ -429,273 +510,867 @@ impl App {
             }
         }
         self.hist_pos = None;
-        if let Err(e) = self.send_command(self.selected, &cmd, ReqKind::User) {
-            self.sel_mut().response = vec![format!("> {}", cmd.trim()), format!("ошибка: {e}")];
+        let id = self.sel().id;
+        self.send(Request::Command { id, cmd: cmd.trim().trim_start_matches('/').to_string(), user: true });
+    }
+
+    fn complete_input(&mut self) {
+        if !self.has_server() {
+            return;
+        }
+        let value = self.input.value.clone();
+        if let Some(c) = &mut self.completion
+            && c.applied == value
+            && c.items.len() > 1
+        {
+            c.idx = (c.idx + 1) % c.items.len();
+            let v = format!("{}{}", c.base, c.items[c.idx]);
+            c.applied = v.clone();
+            self.input.set(&v);
+            return;
+        }
+        let players = self.sel().players.clone();
+        let (start, items) = crate::complete::candidates(&value, &players);
+        let base = value[..start].to_string();
+        let word_len = value[start..].chars().count();
+        self.completion = None;
+        match items.len() {
+            0 => self.completion_hint = Some(tr!("нет вариантов", "no matches").into()),
+            1 => {
+                self.input.set(&format!("{base}{} ", items[0]));
+                self.completion_hint = None;
+            }
+            _ => {
+                let prefix = crate::complete::common_prefix(&items);
+                let shown: Vec<&str> = items.iter().take(12).map(String::as_str).collect();
+                let more = if items.len() > 12 { format!(" … +{}", items.len() - 12) } else { String::new() };
+                self.completion_hint = Some(format!("{}{more}", shown.join("  ")));
+                let v = if prefix.chars().count() > word_len {
+                    format!("{base}{prefix}")
+                } else {
+                    format!("{base}{}", items[0])
+                };
+                self.input.set(&v);
+                self.completion = Some(Completion { base, items, idx: 0, applied: v });
+            }
         }
     }
 
     fn request_quit(&mut self) {
-        let running = self.servers.iter().filter(|s| s.proc.is_some()).count();
-        if self.quitting {
-            for s in &mut self.servers {
-                if let Some(p) = &mut s.proc {
-                    p.kill();
-                }
-            }
-            self.should_quit = true;
-        } else if running == 0 {
+        let running = self.servers.iter().filter(|s| s.running()).count();
+        if running == 0 || !self.connected {
             self.should_quit = true;
         } else {
-            self.popup = Some(Popup::Confirm {
-                title: "Выход".into(),
-                text: format!(
-                    "Запущено локальных серверов: {running}. Они будут штатно остановлены (stop), затем mctui закроется."
-                ),
-                action: Action::QuitStopAll,
-            });
-        }
-    }
-
-    pub fn quit_stop_all(&mut self) {
-        self.quitting = true;
-        for i in 0..self.servers.len() {
-            let s = &mut self.servers[i];
-            s.restart_at = None;
-            if s.proc.is_some() && s.status != Status::Stopping {
-                self.stop(i, false);
-            }
-        }
-        self.toast("остановка серверов… Ctrl+Q ещё раз — убить принудительно", ToastKind::Info);
-        self.check_quit();
-    }
-
-    fn check_quit(&mut self) {
-        if self.quitting && self.servers.iter().all(|s| s.proc.is_none()) {
-            self.should_quit = true;
+            self.popup = Some(Popup::Quit { running });
         }
     }
 
     fn run_action(&mut self, a: Action) {
         match a {
-            Action::QuitStopAll => self.quit_stop_all(),
-            Action::ForceKill(i) => {
-                if let Some(p) = &mut self.servers[i].proc {
-                    p.kill();
-                }
-            }
-            Action::RemoteStop(i) => {
-                if let Err(e) = self.send_command(i, "stop", ReqKind::Action) {
-                    self.toast(e, ToastKind::Error);
-                }
-            }
-            Action::Command { idx, cmd } => match self.send_command(idx, &cmd, ReqKind::Action) {
-                Ok(()) => self.toast(format!("отправлено: {cmd}"), ToastKind::Ok),
-                Err(e) => self.toast(e, ToastKind::Error),
-            },
+            Action::Kill(id) => self.send(Request::Kill { id }),
+            Action::RemoteStop(id) => self.send(Request::Stop { id, restart: false }),
+            Action::Command { id, cmd } => self.send(Request::Command { id, cmd, user: false }),
             Action::DeleteBackup(p) => match std::fs::remove_file(&p) {
                 Ok(()) => {
-                    self.toast("бэкап удалён", ToastKind::Ok);
+                    self.toast(tr!("бэкап удалён", "backup deleted"), ToastKind::Ok);
                     self.refresh_backups();
                 }
-                Err(e) => self.toast(format!("не удалось удалить: {e}"), ToastKind::Error),
+                Err(e) => self
+                    .toast(tr!(format!("не удалось удалить: {e}"), format!("could not delete: {e}")), ToastKind::Error),
             },
-            Action::EnableRcon(i) => self.enable_rcon(i),
-            Action::RemoveServer(i) => self.remove_server(i),
+            Action::Restore { id, path } => self.send(Request::Restore { id, path }),
+            Action::EnableRcon => self.enable_rcon(),
+            Action::RemoveServer(id) => self.send(Request::RemoveServer { id }),
+            Action::AccessRemove { list, name } => self.access_remove(list, &name),
+            Action::ApplyUpdates(paths) => self.apply_updates(paths),
         }
     }
 
-    fn enable_rcon(&mut self, idx: usize) {
-        let s = &mut self.servers[idx];
-        let Some(path) = s.cfg.properties_path() else {
-            return;
-        };
+    fn save_props(&mut self, msg_ok: String) {
+        let s = self.sel_mut();
+        let (Some(path), Some(props)) = (s.cfg.properties_path(), &s.props) else { return };
+        let res = props.save(&path);
+        let id = s.id;
+        let running = s.running();
+        s.reload_props();
+        match res {
+            Ok(()) => {
+                self.send(Request::PropsChanged { id });
+                let tail = if running {
+                    tr!(" — нужен перезапуск (Ctrl+R)", " — restart needed (Ctrl+R)")
+                } else {
+                    ""
+                };
+                self.toast(format!("{msg_ok}{tail}"), ToastKind::Ok);
+            }
+            Err(e) => self.toast(tr!(format!("ошибка записи: {e}"), format!("write error: {e}")), ToastKind::Error),
+        }
+    }
+
+    fn enable_rcon(&mut self) {
+        let s = self.sel_mut();
         let Some(props) = &mut s.props else {
-            self.toast("server.properties не загружен", ToastKind::Error);
+            self.toast(tr!("server.properties не загружен", "server.properties is not loaded"), ToastKind::Error);
             return;
         };
         props.set("enable-rcon", "true");
         if props.get("rcon.password").unwrap_or("").is_empty() {
-            props.set("rcon.password", &random_password());
+            props.set("rcon.password", &crate::daemon::random_token()[..32]);
         }
         if props.get("rcon.port").unwrap_or("").is_empty() {
             props.set("rcon.port", "25575");
         }
         // Не дублировать опросы list/tps операторам в чат.
         props.set("broadcast-rcon-to-ops", "false");
-        match props.save(&path) {
-            Ok(()) => {
-                if s.proc.is_some() {
-                    s.needs_restart = true;
-                }
-                s.reload_props();
-                self.toast(
-                    "RCON включён. Перезапустите сервер (Ctrl+R), чтобы появились TPS и список игроков",
-                    ToastKind::Ok,
-                );
-            }
-            Err(e) => self.toast(format!("ошибка записи: {e}"), ToastKind::Error),
-        }
+        self.save_props(
+            tr!(
+                "RCON включён: после перезапуска появятся TPS и точный список игроков",
+                "RCON enabled: TPS and the exact player list appear after a restart"
+            )
+            .into(),
+        );
     }
 
     fn set_property(&mut self, key: &str, value: &str) {
         let s = self.sel_mut();
-        let Some(path) = s.cfg.properties_path() else {
-            return;
-        };
         let Some(props) = &mut s.props else { return };
         props.set(key, value);
-        let res = props.save(&path);
-        let running = s.proc.is_some();
-        s.reload_props();
-        match res {
-            Ok(()) => {
-                if running {
-                    self.sel_mut().needs_restart = true;
-                    self.toast(format!("{key} = {value} — сохранено, нужен перезапуск"), ToastKind::Ok);
-                } else {
-                    self.toast(format!("{key} = {value} — сохранено"), ToastKind::Ok);
-                }
-            }
-            Err(e) => self.toast(format!("ошибка записи: {e}"), ToastKind::Error),
+        self.save_props(tr!(format!("{key} = {value} — сохранено"), format!("{key} = {value} — saved")));
+    }
+
+    // ───────────────────────────── настройки mctui ─────────────────────────────
+
+    /// Строки настроек mctui над server.properties.
+    pub fn opts(&self) -> Vec<Opt> {
+        if self.has_server() && self.sel().is_local() {
+            vec![Opt::Autostart, Opt::AutoRestart, Opt::BackupEvery, Opt::BackupKeep, Opt::RestartTimes, Opt::Language]
+        } else {
+            vec![Opt::Language]
         }
     }
 
+    pub fn opt_value(&self, o: Opt) -> String {
+        let c = &self.sel().cfg;
+        let yes_no = |b: bool| if b { tr!("да", "yes") } else { tr!("нет", "no") }.to_string();
+        match o {
+            Opt::Autostart => yes_no(c.autostart),
+            Opt::AutoRestart => yes_no(c.auto_restart),
+            Opt::BackupEvery => c.backup_every_hours.to_string(),
+            Opt::BackupKeep => c.backup_keep.to_string(),
+            Opt::RestartTimes => {
+                if c.restart_times.is_empty() {
+                    tr!("выкл", "off").into()
+                } else {
+                    c.restart_times.join(", ")
+                }
+            }
+            Opt::Language => match self.language.as_deref() {
+                Some("ru") => "Русский".into(),
+                Some("en") => "English".into(),
+                _ => tr!("как в системе", "system").into(),
+            },
+        }
+    }
+
+    fn update_cfg(&mut self, f: impl FnOnce(&mut ServerConfig)) {
+        let s = self.sel_mut();
+        let mut cfg = s.view.cfg.clone();
+        f(&mut cfg);
+        s.view.cfg = cfg.clone(); // сразу видно в окне, служба пришлёт подтверждение
+        let id = s.id;
+        self.send(Request::UpdateServer { id, cfg: Box::new(cfg) });
+    }
+
+    fn toggle_opt(&mut self, o: Opt) {
+        match o {
+            Opt::Autostart => self.update_cfg(|c| c.autostart = !c.autostart),
+            Opt::AutoRestart => self.update_cfg(|c| c.auto_restart = !c.auto_restart),
+            Opt::Language => {
+                let next = match self.language.as_deref() {
+                    None => Some("ru"),
+                    Some("ru") => Some("en"),
+                    _ => None,
+                };
+                self.language = next.map(str::to_string);
+                crate::i18n::init(next);
+                self.send(Request::SetLanguage { language: self.language.clone() });
+                if self.screen == Screen::Logs {
+                    self.build_log_sources();
+                }
+            }
+            _ => self.edit_opt(o),
+        }
+    }
+
+    fn edit_opt(&mut self, o: Opt) {
+        let c = &self.sel().cfg;
+        let v = match o {
+            Opt::BackupEvery => c.backup_every_hours.to_string(),
+            Opt::BackupKeep => c.backup_keep.to_string(),
+            Opt::RestartTimes => c.restart_times.join(", "),
+            _ => return self.toggle_opt(o),
+        };
+        self.popup =
+            Some(Popup::Edit { title: o.label().into(), input: TextInput::with(&v), target: EditTarget::Opt(o) });
+    }
+
+    fn apply_opt(&mut self, o: Opt, v: &str) {
+        let bad = |app: &mut App| app.toast(tr!("неверное значение", "invalid value"), ToastKind::Error);
+        match o {
+            Opt::BackupEvery => match v.trim().parse::<u32>() {
+                Ok(n) if n <= 24 * 30 => self.update_cfg(|c| c.backup_every_hours = n),
+                _ => bad(self),
+            },
+            Opt::BackupKeep => match v.trim().parse::<usize>() {
+                Ok(n) if n >= 1 => self.update_cfg(|c| c.backup_keep = n),
+                _ => bad(self),
+            },
+            Opt::RestartTimes => {
+                let parts: Vec<String> =
+                    v.split([',', ' ', ';']).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect();
+                if parts.iter().all(|p| crate::config::parse_hm(p).is_some()) {
+                    let norm: Vec<String> = parts
+                        .iter()
+                        .filter_map(|p| crate::config::parse_hm(p))
+                        .map(|(h, m)| format!("{h:02}:{m:02}"))
+                        .collect();
+                    self.update_cfg(|c| c.restart_times = norm);
+                } else {
+                    self.toast(
+                        tr!(
+                            "время — ЧЧ:ММ через запятую, например 04:00, 16:00",
+                            "times are HH:MM, comma-separated, e.g. 04:00, 16:00"
+                        ),
+                        ToastKind::Error,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ───────────────────────────── бэкапы ─────────────────────────────
+
     pub fn refresh_backups(&mut self) {
+        self.backups_at = Some(Instant::now());
+        if !self.has_server() {
+            self.backups.clear();
+            return;
+        }
         let s = self.sel();
         self.backups =
             if s.is_local() { backup::list(&s.cfg.backup_dir(), &backup::file_prefix(&s.cfg.name)) } else { vec![] };
         self.backups_sel = self.backups_sel.min(self.backups.len().saturating_sub(1));
     }
 
+    // ───────────────────────────── доступ ─────────────────────────────
+
+    fn access_mtime(&self) -> Option<SystemTime> {
+        let dir = self.sel().cfg.dir.clone()?;
+        std::fs::metadata(self.access.list.path(&dir)).and_then(|m| m.modified()).ok()
+    }
+
+    /// Перечитать список доступа, если сменился сервер/список или файл изменился.
+    fn refresh_access(&mut self, force: bool) {
+        if !self.has_server() || !self.sel().is_local() {
+            self.access.entries.clear();
+            self.access.loaded = None;
+            return;
+        }
+        let key = (self.sel().id, self.access.list, self.access_mtime());
+        if !force && self.access.loaded == Some(key) {
+            return;
+        }
+        self.access.loaded = Some(key);
+        let dir = self.sel().cfg.dir().to_path_buf();
+        match access::read(&dir, self.access.list) {
+            Ok(e) => {
+                self.access.entries = e;
+                self.access.error = None;
+            }
+            Err(e) => {
+                self.access.entries.clear();
+                self.access.error = Some(format!("{e:#}"));
+            }
+        }
+        self.access.sel = self.access.sel.min(self.access.entries.len().saturating_sub(1));
+    }
+
+    fn cycle_access_list(&mut self, d: isize) {
+        let all = List::ALL;
+        let i = all.iter().position(|l| *l == self.access.list).unwrap_or(0) as isize;
+        self.access.list = all[(i + d).rem_euclid(all.len() as isize) as usize];
+        self.access.sel = 0;
+        self.refresh_access(true);
+    }
+
+    fn access_add(&mut self, list: List, value: &str) {
+        let name = value.trim().to_string();
+        let ok = if list.is_ip() { access::valid_ip(&name) } else { access::valid_name(&name) };
+        if !ok {
+            let msg = if list.is_ip() {
+                tr!("неверный IP-адрес", "invalid IP address")
+            } else {
+                tr!("ник — 3–16 символов: буквы, цифры, _", "a name is 3–16 characters: letters, digits, _")
+            };
+            return self.toast(msg, ToastKind::Error);
+        }
+        let s = self.sel();
+        if s.running() {
+            let cmd = access::command(list, true, &name, None);
+            let id = s.id;
+            self.send(Request::Command { id, cmd, user: false });
+            return;
+        }
+        let dir = s.cfg.dir().to_path_buf();
+        let online = s.prop("online-mode") != Some("false");
+        self.access.busy = true;
+        self.spawn_task(
+            move || access::add(&dir, list, &name, None, online).map(|()| name).map_err(|e| format!("{e:#}")),
+            |app, res| {
+                app.access.busy = false;
+                match res {
+                    Ok(name) => app.toast(tr!(format!("{name} добавлен"), format!("{name} added")), ToastKind::Ok),
+                    Err(e) => app.toast(e, ToastKind::Error),
+                }
+                app.refresh_access(true);
+            },
+        );
+    }
+
+    fn access_remove(&mut self, list: List, name: &str) {
+        let s = self.sel();
+        if s.running() {
+            let cmd = access::command(list, false, name, None);
+            let id = s.id;
+            self.send(Request::Command { id, cmd, user: false });
+            return;
+        }
+        match access::remove(s.cfg.dir(), list, name) {
+            Ok(()) => self.toast(tr!(format!("{name} убран из списка"), format!("{name} removed")), ToastKind::Ok),
+            Err(e) => self.toast(format!("{e:#}"), ToastKind::Error),
+        }
+        self.refresh_access(true);
+    }
+
+    pub fn whitelist_on(&self) -> bool {
+        self.sel().prop("white-list") == Some("true")
+    }
+
+    fn toggle_whitelist(&mut self) {
+        let on = !self.whitelist_on();
+        let s = self.sel();
+        if s.running() {
+            let id = s.id;
+            self.send(Request::Command { id, cmd: access::whitelist_switch_command(on).into(), user: false });
+            // Сервер сам запишет white-list в server.properties; перечитаем через пару секунд.
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let _ = tx.send(AppEvent::Ui(UiTask(Box::new(|app: &mut App| {
+                    if app.has_server() {
+                        app.sel_mut().reload_props()
+                    }
+                }))));
+            });
+        } else {
+            self.set_property("white-list", if on { "true" } else { "false" });
+        }
+    }
+
+    // ───────────────────────────── плагины ─────────────────────────────
+
+    fn refresh_plugins(&mut self, force: bool) {
+        if !self.has_server() || !self.sel().is_local() {
+            self.plugins.items.clear();
+            self.plugins.loaded_for = None;
+            return;
+        }
+        let id = self.sel().id;
+        if !force && self.plugins.loaded_for == Some(id) {
+            return;
+        }
+        if self.plugins.loaded_for != Some(id) {
+            self.plugins.updates.clear();
+            self.plugins.checked = false;
+        }
+        self.plugins.loaded_for = Some(id);
+        self.plugins.items = plugins::scan(self.sel().cfg.dir());
+        self.plugins.sel = self.plugins.sel.min(self.plugins.items.len().saturating_sub(1));
+    }
+
+    fn toggle_plugin(&mut self) {
+        let Some(p) = self.plugins.items.get(self.plugins.sel).cloned() else { return };
+        match plugins::set_enabled(&p, !p.enabled) {
+            Ok(_) => {
+                let what =
+                    if p.enabled { tr!("выключен", "disabled") } else { tr!("включён", "enabled") };
+                let tail = if self.sel().running() {
+                    tr!(" — вступит в силу после перезапуска", " — takes effect after a restart")
+                } else {
+                    ""
+                };
+                self.toast(format!("{}: {what}{tail}", p.name), ToastKind::Ok);
+            }
+            Err(e) => self.toast(format!("{e:#}"), ToastKind::Error),
+        }
+        self.refresh_plugins(true);
+    }
+
+    fn check_plugin_updates(&mut self) {
+        if self.plugins.checking || self.plugins.items.is_empty() {
+            return;
+        }
+        let items = self.plugins.items.clone();
+        let game = self.sel().version.clone();
+        let id = self.sel().id;
+        self.plugins.checking = true;
+        self.spawn_task(
+            move || plugins::check_updates(&items, game.as_deref()).map_err(|e| format!("{e:#}")),
+            move |app, res| {
+                app.plugins.checking = false;
+                if app.plugins.loaded_for != Some(id) {
+                    return;
+                }
+                match res {
+                    Ok(u) => {
+                        app.plugins.checked = true;
+                        let n = u.len();
+                        app.plugins.updates = u;
+                        if n == 0 {
+                            app.toast(
+                                tr!(
+                                    "все плагины актуальны (по данным Modrinth)",
+                                    "all plugins are up to date (per Modrinth)"
+                                ),
+                                ToastKind::Ok,
+                            );
+                        } else {
+                            app.toast(
+                                tr!(
+                                    format!("доступно обновлений: {n} — Enter или U, чтобы установить"),
+                                    format!("{n} update(s) available — Enter or U to install")
+                                ),
+                                ToastKind::Info,
+                            );
+                        }
+                    }
+                    Err(e) => app.toast(e, ToastKind::Error),
+                }
+            },
+        );
+    }
+
+    fn ask_apply_updates(&mut self, all: bool) {
+        let paths: Vec<PathBuf> = if all {
+            self.plugins
+                .items
+                .iter()
+                .filter(|p| self.plugins.updates.contains_key(&p.path))
+                .map(|p| p.path.clone())
+                .collect()
+        } else {
+            match self.plugins.items.get(self.plugins.sel) {
+                Some(p) if self.plugins.updates.contains_key(&p.path) => vec![p.path.clone()],
+                Some(_) => {
+                    return self.toast(
+                        if self.plugins.checked {
+                            tr!("для этого файла обновлений нет", "no update for this file")
+                        } else {
+                            tr!("сначала проверьте обновления: c", "check for updates first: c")
+                        },
+                        ToastKind::Info,
+                    );
+                }
+                None => return,
+            }
+        };
+        if paths.is_empty() {
+            return self.toast(tr!("обновлять нечего", "nothing to update"), ToastKind::Info);
+        }
+        let names: Vec<String> = self
+            .plugins
+            .items
+            .iter()
+            .filter(|p| paths.contains(&p.path))
+            .map(|p| format!("{} → {}", p.name, self.plugins.updates[&p.path].version))
+            .collect();
+        let tail = if self.sel().running() {
+            tr!(" Изменения вступят в силу после перезапуска.", " Changes take effect after a restart.")
+        } else {
+            ""
+        };
+        self.popup = Some(Popup::Confirm {
+            title: tr!("Обновить плагины", "Update plugins").into(),
+            text: tr!(
+                format!("{}. Старые файлы уйдут в {}/.{tail}", names.join(", "), plugins::OLD_DIR),
+                format!("{}. Old files move to {}/.{tail}", names.join(", "), plugins::OLD_DIR)
+            ),
+            action: Action::ApplyUpdates(paths),
+        });
+    }
+
+    fn apply_updates(&mut self, paths: Vec<PathBuf>) {
+        let jobs: Vec<(PluginInfo, UpdateInfo)> = self
+            .plugins
+            .items
+            .iter()
+            .filter(|p| paths.contains(&p.path))
+            .filter_map(|p| Some((p.clone(), self.plugins.updates.get(&p.path)?.clone())))
+            .collect();
+        self.plugins.busy = Some(tr!("скачивание обновлений…", "downloading updates…").into());
+        self.spawn_task(
+            move || {
+                let mut ok = 0;
+                let mut errs = vec![];
+                for (p, u) in &jobs {
+                    match plugins::apply_update(p, u) {
+                        Ok(_) => ok += 1,
+                        Err(e) => errs.push(format!("{}: {e:#}", p.name)),
+                    }
+                }
+                (ok, errs)
+            },
+            |app, (ok, errs)| {
+                app.plugins.busy = None;
+                app.plugins.updates.clear();
+                app.plugins.checked = false;
+                app.refresh_plugins(true);
+                if errs.is_empty() {
+                    app.toast(tr!(format!("обновлено: {ok}"), format!("updated: {ok}")), ToastKind::Ok);
+                } else {
+                    app.toast(errs.join("; "), ToastKind::Error);
+                }
+            },
+        );
+    }
+
+    // ───────────────────────────── выбор сервера и вкладок ─────────────────────────────
+
     fn on_select_changed(&mut self) {
         self.players_sel = 0;
         self.settings_sel = 0;
         self.backups_sel = 0;
-        self.sel_mut().reload_props();
-        self.refresh_backups();
+        self.access.sel = 0;
+        self.plugins.sel = 0;
+        self.completion = None;
+        self.completion_hint = None;
+        if self.has_server() {
+            self.sel_mut().reload_props();
+        }
+        self.on_tab_shown(true);
     }
 
-    fn set_tab(&mut self, t: Tab) {
-        self.tab = t;
-        match t {
-            Tab::Settings => self.sel_mut().reload_props(),
+    fn on_tab_shown(&mut self, force: bool) {
+        match self.tab {
+            Tab::Settings | Tab::Access => {
+                if self.has_server() {
+                    self.sel_mut().reload_props();
+                }
+                if self.tab == Tab::Access {
+                    self.refresh_access(force);
+                }
+            }
             Tab::Backups => self.refresh_backups(),
+            Tab::Plugins => self.refresh_plugins(force),
             _ => {}
         }
     }
 
-    // ───────────────────────────── фоновые события ─────────────────────────────
+    fn set_tab(&mut self, t: Tab) {
+        self.tab = t;
+        self.on_tab_shown(false);
+    }
+
+    // ───────────────────────────── события ─────────────────────────────
 
     pub fn on_event(&mut self, ev: AppEvent) {
-        let pos = |app: &Self, id: usize| app.servers.iter().position(|s| s.id == id);
         match ev {
-            AppEvent::Line { id, line } => {
-                if let Some(i) = pos(self, id) {
-                    self.on_line(i, &line)
+            AppEvent::Daemon(m) => self.on_daemon(*m),
+            AppEvent::DaemonLost(e) => {
+                if self.connected {
+                    self.toast(e.clone(), ToastKind::Error);
                 }
-            }
-            AppEvent::Exited { id, pid, status } => {
-                if let Some(i) = pos(self, id) {
-                    self.on_exit(i, pid, status)
-                }
-            }
-            AppEvent::Rcon { id, generation, ev } => {
-                if let Some(i) = pos(self, id) {
-                    self.on_rcon(i, generation, ev)
-                }
-            }
-            AppEvent::Backup { id, ev } => {
-                if let Some(i) = pos(self, id) {
-                    self.on_backup(i, ev)
-                }
+                self.connected = false;
+                self.daemon_error = Some(e);
             }
             AppEvent::UpdateAvailable(v) => {
-                self.toast(format!("Доступна версия {v} — выполните «mctui update»"), ToastKind::Info);
+                self.toast(
+                    tr!(
+                        format!("Доступна версия {v} — выполните «mctui update»"),
+                        format!("Version {v} is available — run “mctui update”")
+                    ),
+                    ToastKind::Info,
+                );
                 self.update_available = Some(v);
             }
+            AppEvent::Ui(UiTask(f)) => f(self),
+            // Процессы и RCON живут в службе — окну эти события не приходят.
+            _ => {}
+        }
+    }
+
+    fn on_daemon(&mut self, m: Msg) {
+        match m {
+            Msg::Welcome { version, .. } => {
+                self.connected = true;
+                self.daemon_error = None;
+                self.version_check_pending = version != crate::update::VERSION;
+                self.daemon_outdated = false;
+                self.daemon_version = Some(version);
+            }
+            Msg::Denied { reason } => self.daemon_error = Some(reason),
+            Msg::State { servers } => self.on_state(servers),
+            Msg::Log { id, lines, reset } => {
+                let Some(i) = self.servers.iter().position(|s| s.id == id) else { return };
+                if reset {
+                    self.servers[i].log = LogBuffer::new(10_000);
+                }
+                let following = !reset
+                    && self.screen == Screen::Logs
+                    && i == self.selected
+                    && matches!(self.logs.active_source(), Some(LogSource::Live | LogSource::Chat));
+                let chat = matches!(self.logs.active_source(), Some(LogSource::Chat));
+                for l in &lines {
+                    let line = self.servers[i].log.push(l);
+                    let shown = if chat {
+                        crate::server::stats::is_chat(&line.text)
+                    } else {
+                        self.logs.filter.pass(line.level)
+                    };
+                    if following && self.logs.scroll > 0 && shown {
+                        self.logs.scroll += 1; // держим вид на месте, пока пользователь читает старое
+                    }
+                }
+            }
+            Msg::History { id, samples } => {
+                if let Some(s) = self.servers.iter_mut().find(|s| s.id == id) {
+                    s.history = samples.into_iter().collect();
+                }
+            }
+            Msg::Sample { id, sample } => {
+                if let Some(s) = self.servers.iter_mut().find(|s| s.id == id) {
+                    s.history.push_back(sample);
+                    while s.history.len() > HISTORY_CAP {
+                        s.history.pop_front();
+                    }
+                }
+            }
+            Msg::Notice { text, kind } => {
+                let k = match kind {
+                    NoticeKind::Info => ToastKind::Info,
+                    NoticeKind::Ok => ToastKind::Ok,
+                    NoticeKind::Error => ToastKind::Error,
+                };
+                if let Some(setup) = &mut self.setup
+                    && k == ToastKind::Error
+                    && self.screen == Screen::Setup
+                {
+                    setup.error = Some(text.clone());
+                }
+                self.toast(text, k);
+                if self.tab == Tab::Backups {
+                    self.refresh_backups();
+                }
+            }
+        }
+    }
+
+    fn on_state(&mut self, views: Vec<ServerView>) {
+        let sel_id = self.sel_id();
+        let mut old: HashMap<usize, ServerUi> = self.servers.drain(..).map(|s| (s.id, s)).collect();
+        for v in views {
+            let s = match old.remove(&v.id) {
+                Some(mut s) => {
+                    let props_changed = s.view.cfg.dir != v.cfg.dir || s.view.needs_restart != v.needs_restart;
+                    s.view = v;
+                    if props_changed {
+                        s.reload_props();
+                    }
+                    s
+                }
+                None => ServerUi::new(v),
+            };
+            self.servers.push(s);
+        }
+        let first = !self.got_state;
+        self.got_state = true;
+        // Выбор: только что добавленный сервер, иначе прежний.
+        if let Some(after) = self.select_new_after
+            && let Some(i) = self.servers.iter().position(|s| s.id > after)
+        {
+            self.select_new_after = None;
+            self.selected = i;
+            self.on_select_changed();
+        } else if let Some(i) = sel_id.and_then(|id| self.servers.iter().position(|s| s.id == id)) {
+            self.selected = i;
+        } else {
+            self.selected = self.selected.min(self.servers.len().saturating_sub(1));
+            if self.has_server() {
+                self.on_select_changed();
+            }
+        }
+        if first && self.has_server() {
+            self.on_select_changed();
+        }
+        if self.servers.is_empty() && self.screen != Screen::Setup {
+            self.open_setup();
+        }
+        if self.version_check_pending {
+            self.version_check_pending = false;
+            if self.servers.iter().any(|s| s.running()) {
+                self.daemon_outdated = true;
+            } else {
+                // Служба старой версии и ничего не запущено — перезапускаем её на текущей.
+                self.send(Request::Shutdown);
+                self.toast(
+                    tr!("служба обновляется до новой версии…", "updating the service to the new version…"),
+                    ToastKind::Info,
+                );
+            }
+        }
+    }
+
+    /// Раз в секунду: всплывашки, свежесть списков на открытой вкладке.
+    pub fn on_tick(&mut self) {
+        let now = Instant::now();
+        if self.toast.as_ref().is_some_and(|t| now.duration_since(t.2) > TOAST_FOR) {
+            self.toast = None;
+        }
+        if self.screen != Screen::Main || !self.has_server() {
+            return;
+        }
+        match self.tab {
+            Tab::Access => self.refresh_access(false),
+            Tab::Backups if self.backups_at.is_none_or(|t| now.duration_since(t) > Duration::from_secs(3)) => {
+                self.refresh_backups()
+            }
+            _ => {}
         }
     }
 
     // ───────────────────────────── список серверов ─────────────────────────────
 
-    fn save_config(&mut self) {
-        let cfg = crate::config::Config {
-            language: self.language.clone(),
-            servers: self.servers.iter().map(|s| s.cfg.clone()).collect(),
-        };
-        if let Err(e) = cfg.save(&self.config_path) {
-            self.toast(format!("не удалось сохранить {}: {e:#}", self.config_path.display()), ToastKind::Error);
-        }
-    }
-
     pub fn open_setup(&mut self) {
-        self.setup = Some(Setup::new(self.servers.is_empty()));
+        let mut s = Setup::new(self.servers.is_empty());
+        s.error = None;
+        self.setup = Some(s);
         self.screen = Screen::Setup;
-    }
-
-    fn add_server(&mut self, mut cfg: crate::config::ServerConfig) {
-        let base = cfg.name.clone();
-        let mut n = 2;
-        while self.servers.iter().any(|s| s.cfg.name == cfg.name) {
-            cfg.name = format!("{base} ({n})");
-            n += 1;
-        }
-        let local_dir = cfg.dir.clone().filter(|_| cfg.kind == Kind::Local);
-        if let Some(d) = local_dir
-            && let Some(other) =
-                self.servers.iter().find(|s| s.cfg.kind == Kind::Local && s.cfg.dir.as_ref() == Some(&d))
-        {
-            let name = other.cfg.name.clone();
-            if let Some(s) = &mut self.setup {
-                s.error = Some(format!("Эта папка уже добавлена как «{name}»"));
-            }
-            return;
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        let name = cfg.name.clone();
-        let is_rcon = cfg.kind == Kind::Rcon;
-        self.servers.push(ServerState::new(cfg, id));
-        self.selected = self.servers.len() - 1;
-        if is_rcon {
-            self.connect_rcon(self.selected);
-        }
-        self.save_config();
-        self.setup = None;
-        self.screen = Screen::Main;
-        self.focus = Focus::Sidebar;
-        self.on_select_changed();
-        let hint = if is_rcon { "" } else { " — Ctrl+S, чтобы запустить" };
-        self.toast(format!("Сервер «{name}» добавлен{hint}"), ToastKind::Ok);
+        self.check_setup_versions();
     }
 
     fn ask_remove_server(&mut self) {
+        if !self.has_server() {
+            return;
+        }
         let s = self.sel();
-        if s.proc.is_some() || s.backup_progress.is_some() {
-            self.toast("сначала остановите сервер и дождитесь окончания бэкапа", ToastKind::Error);
+        if s.running() || s.backup_progress.is_some() {
+            self.toast(
+                tr!(
+                    "сначала остановите сервер и дождитесь окончания бэкапа",
+                    "stop the server and wait for the backup to finish first"
+                ),
+                ToastKind::Error,
+            );
             return;
         }
         self.popup = Some(Popup::Confirm {
-            title: "Убрать из списка".into(),
-            text: format!("Убрать «{}» из mctui? Файлы сервера и бэкапы останутся на диске.", s.cfg.name),
-            action: Action::RemoveServer(self.selected),
+            title: tr!("Убрать из списка", "Remove from list").into(),
+            text: tr!(
+                format!("Убрать «{}» из mctui? Файлы сервера и бэкапы останутся на диске.", s.cfg.name),
+                format!("Remove “{}” from mctui? Server files and backups stay on disk.", s.cfg.name)
+            ),
+            action: Action::RemoveServer(s.id),
         });
     }
 
-    fn remove_server(&mut self, idx: usize) {
-        if idx >= self.servers.len() || self.servers[idx].proc.is_some() {
-            return;
+    fn close_setup(&mut self) {
+        self.setup = None;
+        self.screen = Screen::Main;
+        self.focus = Focus::Sidebar;
+    }
+
+    /// Загрузить список версий ядра для формы «Создать новый», если ещё не загружен.
+    fn check_setup_versions(&mut self) {
+        let Some(setup) = &mut self.setup else { return };
+        let Some(core) = setup.wants_versions() else { return };
+        setup.set_versions(core, Versions::Loading);
+        self.spawn_task(
+            move || crate::create::list_versions(core).map_err(|e| format!("{e:#}")),
+            move |app, res| {
+                if let Some(s) = &mut app.setup {
+                    s.set_versions(
+                        core,
+                        match res {
+                            Ok(v) => Versions::Ready(v),
+                            Err(e) => Versions::Failed(e),
+                        },
+                    );
+                }
+            },
+        );
+    }
+
+    fn add_server(&mut self, cfg: ServerConfig) {
+        self.select_new_after = Some(self.servers.iter().map(|s| s.id).max().unwrap_or(0));
+        let name = cfg.name.clone();
+        let local = cfg.kind == Kind::Local;
+        self.send(Request::AddServer { cfg: Box::new(cfg) });
+        self.close_setup();
+        let hint = if local { tr!(" — Ctrl+S, чтобы запустить", " — Ctrl+S to start") } else { "" };
+        self.toast(
+            tr!(format!("Сервер «{name}» добавлен{hint}"), format!("Server “{name}” added{hint}")),
+            ToastKind::Ok,
+        );
+    }
+
+    fn create_server(&mut self, req: crate::setup::CreateRequest) {
+        if let Some(s) = &mut self.setup {
+            s.creating = Some(tr!("подготовка…", "preparing…").into());
+            s.error = None;
         }
-        let s = self.servers.remove(idx);
-        self.save_config();
-        self.toast(format!("«{}» убран из списка", s.cfg.name), ToastKind::Info);
-        if self.servers.is_empty() {
-            self.selected = 0;
-            self.open_setup();
-        } else {
-            self.selected = self.selected.min(self.servers.len() - 1);
-            self.on_select_changed();
-        }
+        let tx = self.tx.clone();
+        let core = req.opts.core;
+        self.spawn_task(
+            move || {
+                let mut progress = |p: crate::create::Progress| {
+                    let text = match p {
+                        crate::create::Progress::Step(s) => s,
+                        crate::create::Progress::Download { what, done, total } => match total {
+                            Some(t) if t > 0 => {
+                                format!("{what}: {} / {} ({}%)", human_bytes(done), human_bytes(t), done * 100 / t)
+                            }
+                            _ => format!("{what}: {}", human_bytes(done)),
+                        },
+                    };
+                    let _ = tx.send(AppEvent::Ui(UiTask(Box::new(move |app: &mut App| {
+                        if let Some(s) = &mut app.setup {
+                            s.creating = Some(text);
+                        }
+                    }))));
+                };
+                crate::create::create(&req.opts, &mut progress).map(|c| (c, req.name)).map_err(|e| format!("{e:#}"))
+            },
+            move |app, res| match res {
+                Ok((created, name)) => {
+                    // Paper и Purpur хранят Незер и Энд отдельными папками.
+                    let paths: Vec<String> = match core {
+                        crate::create::Core::Paper | crate::create::Core::Purpur => {
+                            vec!["world".into(), "world_nether".into(), "world_the_end".into()]
+                        }
+                        _ => vec!["world".into()],
+                    };
+                    let cfg = ServerConfig::new_local(&name, created.dir, created.command, paths);
+                    app.add_server(cfg);
+                }
+                Err(e) => {
+                    if let Some(s) = &mut app.setup {
+                        s.creating = None;
+                        s.error = Some(e);
+                    }
+                }
+            },
+        );
     }
 
     fn setup_key(&mut self, k: KeyEvent) {
@@ -706,267 +1381,31 @@ impl App {
                 if self.servers.is_empty() {
                     self.should_quit = true;
                 } else {
-                    self.setup = None;
-                    self.screen = Screen::Main;
+                    self.close_setup();
                 }
             }
-            SetupOutcome::Save(cfg) => self.add_server(*cfg),
-        }
-    }
-
-    fn on_line(&mut self, idx: usize, raw: &str) {
-        let following = self.screen == Screen::Logs
-            && idx == self.selected
-            && matches!(self.logs.sources.get(self.logs.active), Some((_, LogSource::Live)));
-        let s = &mut self.servers[idx];
-        let line = s.log.push(raw).clone();
-        if following && self.logs.scroll > 0 && self.logs.filter.pass(line.level) {
-            self.logs.scroll += 1; // держим вид на месте, пока пользователь читает старое
-        }
-        let text = &line.text;
-        if s.status == Status::Starting && stats::is_done(text) {
-            s.status = Status::Running;
-            let name = s.cfg.name.clone();
-            self.connect_rcon(idx);
-            self.toast(format!("{name} запущен"), ToastKind::Ok);
-        }
-        let s = &mut self.servers[idx];
-        if stats::is_stopping(text) && matches!(s.status, Status::Running | Status::Starting) {
-            s.status = Status::Stopping;
-            s.stop_deadline.get_or_insert(Instant::now() + Duration::from_secs(s.cfg.stop_timeout_secs));
-        }
-        if let Some(v) = stats::version(text) {
-            s.version = Some(v);
-        }
-        s.note_op_text(text);
-        match stats::player_event(text) {
-            Some(PlayerEvent::Joined(n)) => {
-                s.players.insert(n);
-            }
-            Some(PlayerEvent::Left(n)) => {
-                s.players.remove(&n);
-            }
-            None => {}
-        }
-        if let Some(until) = s.response_until {
-            if Instant::now() < until {
-                s.response.push(text.clone());
-                if s.response.len() > 50 {
-                    s.response.remove(1);
-                }
-            } else {
-                s.response_until = None;
-            }
-        }
-    }
-
-    fn on_exit(&mut self, idx: usize, pid: u32, status: String) {
-        let s = &mut self.servers[idx];
-        if s.proc.as_ref().map(|p| p.pid) != Some(pid) {
-            return;
-        }
-        s.clear_runtime();
-        s.last_exit = Some(format!("{} — {status}", chrono::Local::now().format("%H:%M:%S")));
-        s.log.push(&format!("──────── mctui: процесс завершился ({status}) ────────"));
-        let name = s.cfg.name.clone();
-        if s.user_stop {
-            s.status = Status::Offline;
-            if s.restart_after_stop && !self.quitting {
-                self.start(idx);
-            } else {
-                self.toast(format!("{name} остановлен"), ToastKind::Info);
-            }
-        } else {
-            s.status = Status::Crashed;
-            if s.cfg.auto_restart && !self.quitting {
-                match s.crash.on_crash(Instant::now()) {
-                    crate::server::supervisor::Decision::Restart => {
-                        let d = s.cfg.restart_delay_secs;
-                        s.status = Status::Restarting;
-                        s.restart_at = Some(Instant::now() + Duration::from_secs(d));
-                        self.toast(format!("{name} упал ({status}), перезапуск через {d} с"), ToastKind::Error);
+            SetupOutcome::Save(cfg) => {
+                // Та же папка уже в списке?
+                let dup = self
+                    .servers
+                    .iter()
+                    .find(|s| s.cfg.kind == Kind::Local && cfg.kind == Kind::Local && s.cfg.dir == cfg.dir)
+                    .map(|s| s.cfg.name.clone());
+                match dup {
+                    Some(n) => {
+                        if let Some(s) = &mut self.setup {
+                            s.error = Some(tr!(
+                                format!("Эта папка уже добавлена как «{n}»"),
+                                format!("This folder is already added as “{n}”")
+                            ));
+                        }
                     }
-                    crate::server::supervisor::Decision::GiveUp => {
-                        s.log.push("mctui: 3 падения за 5 минут — авто-рестарт приостановлен");
-                        self.toast(format!("{name} падает слишком часто — авто-рестарт остановлен"), ToastKind::Error);
-                    }
+                    None => self.add_server(*cfg),
                 }
-            } else {
-                self.toast(format!("{name} завершился: {status}"), ToastKind::Error);
             }
+            SetupOutcome::Create(req) => self.create_server(*req),
         }
-        self.check_quit();
-    }
-
-    fn on_rcon(&mut self, idx: usize, generation: u64, ev: RconEvent) {
-        let s = &mut self.servers[idx];
-        if s.rcon.as_ref().map(|r| r.generation) != Some(generation) {
-            return;
-        }
-        let remote = s.cfg.kind == Kind::Rcon;
-        match ev {
-            RconEvent::Connected => {
-                s.rcon_state = RconState::Connected;
-                if remote {
-                    s.status = Status::Online;
-                    s.log.push(&format!("── RCON подключён к {}:{} ──", s.cfg.host, s.cfg.port));
-                }
-                s.last_poll = None; // опросить сразу
-            }
-            RconEvent::Disconnected(e) => {
-                if remote && s.rcon_state != RconState::Error(e.clone()) {
-                    s.log.push(&format!("── RCON: {e} ──"));
-                }
-                s.rcon_state = RconState::Error(e);
-                if remote {
-                    s.status = Status::Unreachable;
-                    s.players.clear();
-                    s.tps = None;
-                }
-            }
-            RconEvent::Response { kind, cmd, result } => match kind {
-                ReqKind::User => {
-                    if let Ok(body) = &result {
-                        s.note_op_text(&crate::log::strip_codes(body));
-                    }
-                    let mut out = vec![format!("> {cmd}")];
-                    match &result {
-                        Ok(body) if body.trim().is_empty() => out.push("(пустой ответ)".into()),
-                        Ok(body) => out.extend(body.lines().map(crate::log::strip_codes)),
-                        Err(e) => out.push(format!("ошибка: {e}")),
-                    }
-                    for l in &out {
-                        s.log.push(l);
-                    }
-                    s.response = out;
-                }
-                ReqKind::Action => {
-                    if let Ok(body) = &result {
-                        s.note_op_text(&crate::log::strip_codes(body));
-                    }
-                    let msg = match result {
-                        Ok(b) if !b.trim().is_empty() => crate::log::strip_codes(b.lines().next().unwrap_or("")),
-                        Ok(_) => format!("{cmd}: ок"),
-                        Err(e) => format!("{cmd}: {e}"),
-                    };
-                    s.log.push(&format!("> {cmd}: {msg}"));
-                    self.toast(msg, ToastKind::Info);
-                }
-                ReqKind::PollList => {
-                    if let Some(info) = result.ok().as_deref().and_then(stats::parse_list) {
-                        s.players = info.players.into_iter().collect();
-                        s.max_players = Some(info.max);
-                        s.players_source = PlayersSource::Rcon;
-                    }
-                }
-                ReqKind::PollTps => {
-                    if let Some(t) = result.ok().as_deref().and_then(stats::parse_tps) {
-                        s.tps = Some(t);
-                    }
-                }
-            },
-        }
-    }
-
-    fn on_backup(&mut self, idx: usize, ev: BackupEvent) {
-        let s = &mut self.servers[idx];
-        match ev {
-            BackupEvent::Progress(p) => s.backup_progress = Some(p),
-            BackupEvent::Done { path, bytes, warning } => {
-                s.backup_progress = None;
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                s.last_backup =
-                    Some(format!("{} — {name} ({})", chrono::Local::now().format("%H:%M:%S"), human_bytes(bytes)));
-                match warning {
-                    Some(w) => self.toast(format!("бэкап готов, но: {w}"), ToastKind::Error),
-                    None => self.toast(format!("бэкап готов: {name} ({})", human_bytes(bytes)), ToastKind::Ok),
-                }
-                if idx == self.selected {
-                    self.refresh_backups();
-                }
-            }
-            BackupEvent::Failed(e) => {
-                s.backup_progress = None;
-                self.toast(format!("бэкап не удался: {e}"), ToastKind::Error);
-            }
-        }
-    }
-
-    /// Раз в секунду: таймауты остановки, отложенные рестарты, ресурсы, опрос RCON.
-    pub fn on_tick(&mut self) {
-        let now = Instant::now();
-        if self.toast.as_ref().is_some_and(|t| now.duration_since(t.2) > TOAST_FOR) {
-            self.toast = None;
-        }
-        for i in 0..self.servers.len() {
-            let s = &mut self.servers[i];
-            if let (Some(d), Some(p)) = (s.stop_deadline, s.proc.as_mut())
-                && now >= d
-            {
-                s.log.push("mctui: сервер не остановился за отведённое время — kill");
-                p.kill();
-                s.stop_deadline = None;
-            }
-            if s.restart_at.is_some_and(|t| now >= t) {
-                s.restart_at = None;
-                self.start(i);
-            }
-            let s = &mut self.servers[i];
-            if s.rcon_state == RconState::Connected && s.last_poll.is_none_or(|t| now.duration_since(t) >= POLL_EVERY) {
-                s.last_poll = Some(now);
-                if let Some(r) = &s.rcon {
-                    r.send(ReqKind::PollList, "list");
-                    r.send(ReqKind::PollTps, "tps");
-                }
-            }
-        }
-        for s in &mut self.servers {
-            s.reload_ops();
-        }
-        self.refresh_resources();
-    }
-
-    /// CPU/RAM считаются по всему дереву процессов: скрипт запуска (sh, cmd) + java.
-    fn refresh_resources(&mut self) {
-        let Some(sys) = &mut self.sys else { return };
-        if self.servers.iter().all(|s| s.proc.is_none()) {
-            return;
-        }
-        sys.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            true,
-            sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory(),
-        );
-        let mut children: std::collections::HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = Default::default();
-        for (pid, p) in sys.processes() {
-            if let Some(parent) = p.parent() {
-                children.entry(parent).or_default().push(*pid);
-            }
-        }
-        for s in &mut self.servers {
-            let Some(p) = &s.proc else { continue };
-            let root = sysinfo::Pid::from_u32(p.pid);
-            if sys.process(root).is_none() {
-                continue;
-            }
-            let (mut cpu, mut mem) = (0f32, 0u64);
-            let mut stack = vec![root];
-            while let Some(pid) = stack.pop() {
-                if let Some(pr) = sys.process(pid) {
-                    cpu += pr.cpu_usage();
-                    mem += pr.memory();
-                }
-                if let Some(c) = children.get(&pid) {
-                    stack.extend(c);
-                }
-            }
-            s.cpu = Some(cpu);
-            s.mem = Some(mem);
-            s.cpu_hist.push_back(cpu.round() as u64);
-            if s.cpu_hist.len() > 120 {
-                s.cpu_hist.pop_front();
-            }
-        }
+        self.check_setup_versions();
     }
 
     // ───────────────────────────── клавиатура ─────────────────────────────
@@ -979,26 +1418,29 @@ impl App {
             self.popup_key(p, k);
             return;
         }
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if self.screen == Screen::Setup {
-            let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
             if ctrl && matches!(k.code, KeyCode::Char(c) if matches!(latin(c), 'q' | 'c')) {
                 return self.request_quit();
             }
             return self.setup_key(k);
         }
-        if k.modifiers.contains(KeyModifiers::CONTROL)
-            && let KeyCode::Char(c) = k.code
-        {
-            let i = self.selected;
+        if ctrl && let KeyCode::Char(c) = k.code {
             match latin(c) {
                 'q' | 'c' => return self.request_quit(),
-                's' => return self.start(i),
-                'x' => return self.stop(i, false),
-                'r' => return self.stop(i, true),
-                'b' => return self.backup(i),
+                's' => return self.start(),
+                'x' => return self.stop(false),
+                'r' => return self.stop(true),
+                'b' => return self.backup(),
                 'l' => return self.toggle_logs(),
                 _ => {}
             }
+        }
+        if !self.has_server() {
+            if matches!(k.code, KeyCode::Char(c) if latin(c) == 'q') || k.code == KeyCode::Esc {
+                self.should_quit = true;
+            }
+            return;
         }
         match self.screen {
             Screen::Main => self.main_key(k),
@@ -1008,20 +1450,66 @@ impl App {
     }
 
     fn popup_key(&mut self, p: Popup, k: KeyEvent) {
+        let yes = |c: char| matches!(latin(c), 'y' | 'Y') || c == 'д' || c == 'Д';
         match p {
             Popup::Confirm { title, text, action } => match k.code {
                 KeyCode::Enter => self.run_action(action),
-                KeyCode::Char(c) if matches!(latin(c), 'y' | 'Y') || c == 'д' || c == 'Д' => self.run_action(action),
+                KeyCode::Char(c) if yes(c) => self.run_action(action),
                 KeyCode::Esc => {}
                 KeyCode::Char(c) if matches!(latin(c), 'n' | 'N') => {}
                 _ => self.popup = Some(Popup::Confirm { title, text, action }),
             },
-            Popup::Edit { title, mut input, key } => match k.code {
-                KeyCode::Enter => self.set_property(&key, input.value.trim()),
+            Popup::Quit { running } => match k.code {
+                KeyCode::Enter => {
+                    self.exit_message = Some(tr!(
+                        format!(
+                            "Серверы продолжают работать в фоне ({running}). Вернуться: mctui · состояние: mctui daemon status"
+                        ),
+                        format!(
+                            "Servers keep running in the background ({running}). Come back: mctui · status: mctui daemon status"
+                        )
+                    ));
+                    self.should_quit = true;
+                }
+                KeyCode::Char(c) if latin(c) == 's' => {
+                    self.send(Request::StopAll);
+                    self.exit_message = Some(
+                        tr!(
+                            "Серверы штатно останавливаются в фоне (mctui daemon status).",
+                            "Servers are shutting down cleanly in the background (mctui daemon status)."
+                        )
+                        .into(),
+                    );
+                    // Дать запросу уйти по сети до выхода.
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        let _ = tx.send(AppEvent::Ui(UiTask(Box::new(|app: &mut App| app.should_quit = true))));
+                    });
+                }
+                KeyCode::Esc => {}
+                KeyCode::Char(c) if matches!(latin(c), 'n' | 'q') => {}
+                _ => self.popup = Some(Popup::Quit { running }),
+            },
+            Popup::Edit { title, mut input, target } => match k.code {
+                KeyCode::Enter => {
+                    let v = input.value.clone();
+                    match target {
+                        EditTarget::Property(key) => self.set_property(&key, v.trim()),
+                        EditTarget::Opt(o) => self.apply_opt(o, &v),
+                        EditTarget::AccessAdd(list) => self.access_add(list, &v),
+                        EditTarget::Chat => {
+                            if !v.trim().is_empty() {
+                                let id = self.sel().id;
+                                self.send(Request::Command { id, cmd: format!("say {}", v.trim()), user: false });
+                            }
+                        }
+                    }
+                }
                 KeyCode::Esc => {}
                 _ => {
                     input.handle(&k);
-                    self.popup = Some(Popup::Edit { title, input, key });
+                    self.popup = Some(Popup::Edit { title, input, target });
                 }
             },
         }
@@ -1029,10 +1517,19 @@ impl App {
 
     fn main_key(&mut self, k: KeyEvent) {
         if self.focus == Focus::Input {
+            if k.code != KeyCode::Tab {
+                self.completion = None;
+                if !matches!(k.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                    self.completion_hint = None;
+                }
+            }
             match k.code {
                 KeyCode::Enter => self.submit_input(),
-                KeyCode::Esc => self.focus = Focus::Sidebar,
-                KeyCode::Tab => self.focus = Focus::Sidebar,
+                KeyCode::Esc => {
+                    self.completion_hint = None;
+                    self.focus = Focus::Sidebar
+                }
+                KeyCode::Tab => self.complete_input(),
                 KeyCode::BackTab => self.focus = Focus::Content,
                 KeyCode::Up => self.history_step(-1),
                 KeyCode::Down => self.history_step(1),
@@ -1060,8 +1557,15 @@ impl App {
                 let c = latin(c);
                 match c {
                     'l' | 'L' => return self.toggle_logs(),
-                    '1'..='4' => return self.set_tab(TABS[c as usize - '1' as usize].0),
-                    ':' | 'i' | '/' => {
+                    '1'..='6' => {
+                        self.focus = Focus::Content;
+                        return self.set_tab(TABS[c as usize - '1' as usize]);
+                    }
+                    ':' | '/' => {
+                        self.focus = Focus::Input;
+                        return;
+                    }
+                    'i' if self.focus == Focus::Sidebar => {
                         self.focus = Focus::Input;
                         return;
                     }
@@ -1076,6 +1580,10 @@ impl App {
             }
             KeyCode::Enter if self.focus == Focus::Sidebar => self.focus = Focus::Input,
             KeyCode::Delete if self.focus == Focus::Sidebar => self.ask_remove_server(),
+            KeyCode::Delete if self.focus == Focus::Content => self.content_char('d'),
+            KeyCode::Left | KeyCode::Right if self.focus == Focus::Content && self.tab == Tab::Access => {
+                self.cycle_access_list(if k.code == KeyCode::Left { -1 } else { 1 })
+            }
             KeyCode::Left if self.focus == Focus::Content => self.cycle_tab(-1),
             KeyCode::Right => {
                 if self.focus == Focus::Content {
@@ -1101,9 +1609,13 @@ impl App {
     }
 
     fn cycle_tab(&mut self, d: isize) {
-        let i = TABS.iter().position(|t| t.0 == self.tab).unwrap_or(0) as isize;
+        let i = TABS.iter().position(|t| *t == self.tab).unwrap_or(0) as isize;
         let n = TABS.len() as isize;
-        self.set_tab(TABS[((i + d).rem_euclid(n)) as usize].0);
+        self.set_tab(TABS[((i + d).rem_euclid(n)) as usize]);
+    }
+
+    pub fn settings_len(&self) -> usize {
+        self.opts().len() + self.sel().props.as_ref().map(|p| p.pairs().len()).unwrap_or(0)
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -1123,11 +1635,10 @@ impl App {
             }
             Focus::Content => match self.tab {
                 Tab::Players => self.players_sel = step(self.players_sel, self.sel().players.len()),
-                Tab::Settings => {
-                    let n = self.sel().props.as_ref().map(|p| p.pairs().len()).unwrap_or(0);
-                    self.settings_sel = step(self.settings_sel, n)
-                }
+                Tab::Settings => self.settings_sel = step(self.settings_sel, self.settings_len()),
                 Tab::Backups => self.backups_sel = step(self.backups_sel, self.backups.len()),
+                Tab::Access => self.access.sel = step(self.access.sel, self.access.entries.len()),
+                Tab::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
                 Tab::Status => {}
             },
             Focus::Input => {}
@@ -1154,83 +1665,183 @@ impl App {
     }
 
     fn selected_player(&self) -> Option<String> {
-        self.sel().players.iter().nth(self.players_sel).cloned()
+        self.sel().players.get(self.players_sel).cloned()
+    }
+
+    /// Выбранная строка вкладки «Настройки»: опция mctui или пара server.properties.
+    fn selected_setting(&self) -> Option<Result<Opt, (String, String)>> {
+        let opts = self.opts();
+        if self.settings_sel < opts.len() {
+            return Some(Ok(opts[self.settings_sel]));
+        }
+        let i = self.settings_sel - opts.len();
+        self.sel().props.as_ref()?.pairs().into_iter().nth(i).map(Err)
     }
 
     fn content_char(&mut self, c: char) {
-        let idx = self.selected;
+        let id = self.sel().id;
         match self.tab {
             Tab::Players => {
                 let Some(p) = self.selected_player() else {
                     return;
                 };
                 let (cmd, what) = match c {
-                    'k' => (format!("kick {p}"), "Кикнуть"),
-                    'b' => (format!("ban {p}"), "Забанить"),
-                    'o' => (format!("op {p}"), "Выдать оператора"),
-                    'd' => (format!("deop {p}"), "Снять оператора"),
+                    'k' => (format!("kick {p}"), tr!("Кикнуть", "Kick")),
+                    'b' => (format!("ban {p}"), tr!("Забанить", "Ban")),
+                    'o' => (format!("op {p}"), tr!("Выдать оператора", "Make operator")),
+                    'd' => (format!("deop {p}"), tr!("Снять оператора", "Remove operator")),
+                    'w' => (format!("whitelist add {p}"), tr!("В белый список", "Add to whitelist")),
                     _ => return,
                 };
                 self.popup = Some(Popup::Confirm {
                     title: what.into(),
-                    text: format!("{what} {p}? Будет выполнено: /{cmd}"),
-                    action: Action::Command { idx, cmd },
+                    text: tr!(format!("{what} {p}? Будет выполнено: /{cmd}"), format!("{what} {p}? This runs: /{cmd}")),
+                    action: Action::Command { id, cmd },
                 });
             }
             Tab::Settings => match c {
-                ' ' => {
-                    if let Some((k, v)) = self.selected_property() {
-                        match v.as_str() {
-                            "true" => self.set_property(&k, "false"),
-                            "false" => self.set_property(&k, "true"),
-                            _ => self
-                                .toast("пробел переключает только true/false; Enter — редактировать", ToastKind::Info),
-                        }
-                    }
-                }
+                ' ' => match self.selected_setting() {
+                    Some(Ok(o)) => self.toggle_opt(o),
+                    Some(Err((k, v))) => match v.as_str() {
+                        "true" => self.set_property(&k, "false"),
+                        "false" => self.set_property(&k, "true"),
+                        _ => self.toast(
+                            tr!(
+                                "пробел переключает только true/false; Enter — редактировать",
+                                "Space toggles only true/false; Enter edits"
+                            ),
+                            ToastKind::Info,
+                        ),
+                    },
+                    None => {}
+                },
                 'r' => {
                     if self.sel().is_local() {
                         self.popup = Some(Popup::Confirm {
                             title: "RCON".into(),
-                            text: "Включить RCON на 127.0.0.1 (enable-rcon=true, случайный пароль)? Нужен для TPS и точного списка игроков.".into(),
-                            action: Action::EnableRcon(idx),
+                            text: tr!(
+                                "Включить RCON на 127.0.0.1 (enable-rcon=true, случайный пароль)? Нужен для TPS и точного списка игроков.",
+                                "Enable RCON on 127.0.0.1 (enable-rcon=true, random password)? It is needed for TPS and the exact player list."
+                            )
+                            .into(),
+                            action: Action::EnableRcon,
                         });
                     }
                 }
                 'u' => {
                     self.sel_mut().reload_props();
-                    self.toast("перечитано с диска", ToastKind::Info);
+                    self.toast(tr!("перечитано с диска", "reloaded from disk"), ToastKind::Info);
                 }
                 _ => {}
             },
             Tab::Backups => match c {
-                'n' => self.backup(idx),
+                'n' => self.backup(),
                 'd' => {
                     if let Some(b) = self.backups.get(self.backups_sel) {
                         let name = b.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                         self.popup = Some(Popup::Confirm {
-                            title: "Удалить бэкап".into(),
-                            text: format!("Удалить {name} безвозвратно?"),
+                            title: tr!("Удалить бэкап", "Delete backup").into(),
+                            text: tr!(format!("Удалить {name} безвозвратно?"), format!("Delete {name} permanently?")),
                             action: Action::DeleteBackup(b.path.clone()),
+                        });
+                    }
+                }
+                'r' => {
+                    if let Some(b) = self.backups.get(self.backups_sel) {
+                        let name = b.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        let s = self.sel();
+                        let paths = s.cfg.backup_paths.join(", ");
+                        let running = if s.running() {
+                            tr!(
+                                " Сервер будет остановлен и запущен снова.",
+                                " The server will be stopped and started again."
+                            )
+                        } else {
+                            ""
+                        };
+                        self.popup = Some(Popup::Confirm {
+                            title: tr!("Восстановить из бэкапа", "Restore from backup").into(),
+                            text: tr!(
+                                format!(
+                                    "Восстановить {paths} из {name}?{running} Текущие файлы переедут в .mctui-before-restore/."
+                                ),
+                                format!(
+                                    "Restore {paths} from {name}?{running} Current files move to .mctui-before-restore/."
+                                )
+                            ),
+                            action: Action::Restore { id, path: b.path.clone() },
                         });
                     }
                 }
                 'u' => self.refresh_backups(),
                 _ => {}
             },
+            Tab::Access => {
+                if !self.sel().is_local() {
+                    return;
+                }
+                let list = self.access.list;
+                match c {
+                    'a' | 'n' => {
+                        let title = if list.is_ip() {
+                            tr!(format!("{} — IP-адрес", list.title()), format!("{} — IP address", list.title()))
+                        } else {
+                            tr!(format!("{} — ник игрока", list.title()), format!("{} — player name", list.title()))
+                        };
+                        self.popup = Some(Popup::Edit {
+                            title,
+                            input: TextInput::default(),
+                            target: EditTarget::AccessAdd(list),
+                        });
+                    }
+                    'd' => {
+                        if let Some(e) = self.access.entries.get(self.access.sel) {
+                            let name = e.name.clone();
+                            self.popup = Some(Popup::Confirm {
+                                title: list.title().into(),
+                                text: tr!(
+                                    format!("Убрать {name} из списка «{}»?", list.title()),
+                                    format!("Remove {name} from “{}”?", list.title())
+                                ),
+                                action: Action::AccessRemove { list, name },
+                            });
+                        }
+                    }
+                    'w' => self.toggle_whitelist(),
+                    'u' => {
+                        self.sel_mut().reload_props();
+                        self.refresh_access(true)
+                    }
+                    _ => {}
+                }
+            }
+            Tab::Plugins => match c {
+                ' ' => self.toggle_plugin(),
+                'c' => self.check_plugin_updates(),
+                'U' => self.ask_apply_updates(true),
+                'u' => self.refresh_plugins(true),
+                _ => {}
+            },
             Tab::Status => {}
         }
     }
 
-    fn selected_property(&self) -> Option<(String, String)> {
-        self.sel().props.as_ref()?.pairs().into_iter().nth(self.settings_sel)
-    }
-
     fn content_enter(&mut self) {
-        if self.tab == Tab::Settings
-            && let Some((k, v)) = self.selected_property()
-        {
-            self.popup = Some(Popup::Edit { title: k.clone(), input: TextInput::with(&v), key: k });
+        match self.tab {
+            Tab::Settings => match self.selected_setting() {
+                Some(Ok(o)) => self.edit_opt(o),
+                Some(Err((k, v))) => {
+                    self.popup = Some(Popup::Edit {
+                        title: k.clone(),
+                        input: TextInput::with(&v),
+                        target: EditTarget::Property(k),
+                    })
+                }
+                None => {}
+            },
+            Tab::Plugins => self.ask_apply_updates(false),
+            Tab::Access => self.content_char('a'),
+            _ => {}
         }
     }
 
@@ -1241,11 +1852,14 @@ impl App {
             self.screen = Screen::Main;
             return;
         }
+        if !self.has_server() {
+            return;
+        }
         self.screen = Screen::Logs;
         self.build_log_sources();
         let s = self.sel();
         // По умолчанию: живой вывод, если сервер работает (или это RCON), иначе latest.log.
-        let prefer_live = s.proc.is_some()
+        let prefer_live = s.running()
             || s.cfg.kind == Kind::Rcon && s.cfg.log_path.is_none()
             || s.log.len() > 0 && s.status == Status::Crashed;
         let pick = if prefer_live {
@@ -1261,12 +1875,13 @@ impl App {
         let mut v: Vec<(String, LogSource)> = vec![];
         match s.cfg.kind {
             Kind::Local => {
-                let live = if s.proc.is_some() {
-                    "● Живой вывод"
+                let live = if s.running() {
+                    tr!("● Живой вывод", "● Live output")
                 } else {
-                    "Вывод последнего запуска"
+                    tr!("Вывод последнего запуска", "Last run output")
                 };
                 v.push((live.into(), LogSource::Live));
+                v.push((tr!("💬 Чат", "💬 Chat").into(), LogSource::Chat));
                 if let Some(dir) = s.cfg.logs_dir() {
                     let latest = dir.join("latest.log");
                     if latest.is_file() {
@@ -1289,9 +1904,10 @@ impl App {
                 }
             }
             Kind::Rcon => {
-                v.push(("Сессия RCON".into(), LogSource::Live));
+                v.push((tr!("Сессия RCON", "RCON session").into(), LogSource::Live));
                 if let Some(p) = &s.cfg.log_path {
                     let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    v.push((tr!("💬 Чат", "💬 Chat").into(), LogSource::Chat));
                     v.push((name, LogSource::File(p.clone())));
                 }
             }
@@ -1318,12 +1934,21 @@ impl App {
         }
     }
 
-    /// Строки активного источника после фильтра уровня.
+    /// Строки активного источника после фильтра.
     pub fn visible_log_lines(&self) -> Vec<&LogLine> {
         let f = self.logs.filter;
-        match self.logs.sources.get(self.logs.active) {
-            Some((_, LogSource::Live)) => self.sel().log.iter().filter(|l| f.pass(l.level)).collect(),
-            Some((_, LogSource::File(_))) => self.logs.file_lines.iter().filter(|l| f.pass(l.level)).collect(),
+        match self.logs.active_source() {
+            Some(LogSource::Live) => self.sel().log.iter().filter(|l| f.pass(l.level)).collect(),
+            Some(LogSource::Chat) => {
+                let s = self.sel();
+                // У RCON-сервера живого вывода нет — чат берётся из его файла лога.
+                if s.is_local() || s.log.iter().any(|l| crate::server::stats::is_chat(&l.text)) {
+                    s.log.iter().filter(|l| crate::server::stats::is_chat(&l.text)).collect()
+                } else {
+                    vec![]
+                }
+            }
+            Some(LogSource::File(_)) => self.logs.file_lines.iter().filter(|l| f.pass(l.level)).collect(),
             None => vec![],
         }
     }
@@ -1344,7 +1969,7 @@ impl App {
         if matches.is_empty() {
             self.logs.match_cursor = None;
             if self.logs.search.is_some() {
-                self.toast("совпадений нет", ToastKind::Info);
+                self.toast(tr!("совпадений нет", "no matches"), ToastKind::Info);
             }
             return;
         }
@@ -1385,6 +2010,7 @@ impl App {
             return;
         }
         let h = self.logs_height.get().max(1) as isize;
+        let chat = matches!(self.logs.active_source(), Some(LogSource::Chat));
         match k.code {
             KeyCode::Esc => {
                 if self.logs.search.is_some() {
@@ -1403,6 +2029,7 @@ impl App {
                 self.open_log_source(self.logs.source_sel);
                 self.logs.focus_list = false;
             }
+            KeyCode::Enter if chat => self.open_chat_input(),
             KeyCode::Up => self.scroll_logs(1),
             KeyCode::Down => self.scroll_logs(-1),
             KeyCode::PageUp => self.scroll_logs(h - 1),
@@ -1416,6 +2043,13 @@ impl App {
                 '/' | '.' => self.logs.search_input = Some(TextInput::with(self.logs.search.as_deref().unwrap_or(""))),
                 'n' => self.jump_to_match(-1),
                 'N' => self.jump_to_match(1),
+                'm' | 'i' => self.open_chat_input(),
+                'c' => {
+                    let i = self.logs.sources.iter().position(|(_, s)| matches!(s, LogSource::Chat));
+                    if let Some(i) = i {
+                        self.open_log_source(i);
+                    }
+                }
                 'f' => {
                     self.logs.filter = match self.logs.filter {
                         LevelFilter::All => LevelFilter::WarnUp,
@@ -1438,6 +2072,17 @@ impl App {
         }
     }
 
+    fn open_chat_input(&mut self) {
+        if !self.sel().accepts_commands() {
+            return self.toast(tr!("сервер не запущен", "the server is not running"), ToastKind::Info);
+        }
+        self.popup = Some(Popup::Edit {
+            title: tr!("Сообщение в чат (say)", "Chat message (say)").into(),
+            input: TextInput::default(),
+            target: EditTarget::Chat,
+        });
+    }
+
     // ───────────────────────────── мышь ─────────────────────────────
 
     pub fn on_mouse(&mut self, m: MouseEvent) {
@@ -1455,6 +2100,9 @@ impl App {
                 }
             }
             Screen::Main => {
+                if !self.has_server() {
+                    return;
+                }
                 let l = layout::main(self.area);
                 match m.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
@@ -1462,7 +2110,7 @@ impl App {
                             self.toggle_logs();
                         } else if l.tabs.contains(pos) {
                             if let Some(t) = layout::tab_at(l.tabs, m.column) {
-                                self.set_tab(TABS[t].0);
+                                self.set_tab(TABS[t]);
                                 self.focus = Focus::Content;
                             }
                         } else if l.sidebar.contains(pos) {
@@ -1478,21 +2126,13 @@ impl App {
                             self.focus = Focus::Content;
                         }
                     }
-                    MouseEventKind::ScrollUp => {
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                         if l.sidebar.contains(pos) {
                             self.focus = Focus::Sidebar
                         } else if l.content.contains(pos) {
                             self.focus = Focus::Content
                         }
-                        self.move_selection(-1)
-                    }
-                    MouseEventKind::ScrollDown => {
-                        if l.sidebar.contains(pos) {
-                            self.focus = Focus::Sidebar
-                        } else if l.content.contains(pos) {
-                            self.focus = Focus::Content
-                        }
-                        self.move_selection(1)
+                        self.move_selection(if m.kind == MouseEventKind::ScrollUp { -1 } else { 1 })
                     }
                     _ => {}
                 }
@@ -1519,15 +2159,15 @@ impl App {
     }
 
     pub fn on_paste(&mut self, s: &str) {
-        if self.screen == Screen::Setup && self.popup.is_none() {
+        if let Some(Popup::Edit { input, .. }) = &mut self.popup {
+            input.insert_str(s.trim_end_matches(['\n', '\r']));
+        } else if self.screen == Screen::Setup && self.popup.is_none() {
             if let Some(setup) = &mut self.setup {
                 setup.paste(s);
             }
-        } else if let Some(Popup::Edit { input, .. }) = &mut self.popup {
-            input.insert_str(s);
         } else if let Some(inp) = &mut self.logs.search_input {
             inp.insert_str(s);
-        } else if self.screen == Screen::Main {
+        } else if self.screen == Screen::Main && self.has_server() {
             self.focus = Focus::Input;
             self.input.insert_str(s);
         }
@@ -1547,41 +2187,15 @@ fn read_log_file(p: &std::path::Path) -> anyhow::Result<Vec<LogLine>> {
     Ok(crate::log::parse_text(&String::from_utf8_lossy(&bytes), CAP))
 }
 
-fn random_password() -> String {
-    use std::io::Read;
-    let mut buf = [0u8; 16];
-    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_ok();
-    if !ok {
-        use std::hash::{BuildHasher, Hasher};
-        for chunk in buf.chunks_mut(8) {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u128(Instant::now().elapsed().as_nanos());
-            chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
-        }
-    }
-    buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub fn human_bytes(b: u64) -> String {
-    const U: [&str; 5] = ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ"];
-    let mut v = b as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < U.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    if i == 0 { format!("{b} {}", U[0]) } else { format!("{v:.1} {}", U[i]) }
-}
-
 pub fn human_duration(d: Duration) -> String {
     let s = d.as_secs();
     let (h, m, sec) = (s / 3600, s / 60 % 60, s % 60);
     if h >= 24 {
-        format!("{}д {}ч {}м", h / 24, h % 24, m)
+        tr!(format!("{}д {}ч {}м", h / 24, h % 24, m), format!("{}d {}h {}m", h / 24, h % 24, m))
     } else if h > 0 {
-        format!("{h}ч {m}м")
+        tr!(format!("{h}ч {m}м"), format!("{h}h {m}m"))
     } else {
-        format!("{m}м {sec}с")
+        tr!(format!("{m}м {sec}с"), format!("{m}m {sec}s"))
     }
 }
 
@@ -1600,9 +2214,10 @@ mod tests {
 
     #[test]
     fn formatting() {
-        assert_eq!(human_bytes(512), "512 Б");
-        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 МиБ");
+        crate::i18n::set(crate::i18n::Lang::Ru);
         assert_eq!(human_duration(Duration::from_secs(3725)), "1ч 2м");
-        assert_eq!(random_password().len(), 32);
+        crate::i18n::set(crate::i18n::Lang::En);
+        assert_eq!(human_duration(Duration::from_secs(3725)), "1h 2m");
+        crate::i18n::set(crate::i18n::Lang::Ru);
     }
 }

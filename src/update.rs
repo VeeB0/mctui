@@ -48,15 +48,28 @@ pub fn latest_version() -> Result<String> {
     let out = curl()
         .args(["--max-time", "20", "-o", null_device(), "-w", "%{url_effective}", &url])
         .output()
-        .context("не удалось запустить curl")?;
+        .context(crate::tr!("не удалось запустить curl", "could not run curl"))?;
     if !out.status.success() {
-        bail!("GitHub недоступен или релизов ещё нет ({})", String::from_utf8_lossy(&out.stderr).trim());
+        let e = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        bail!(
+            "{}",
+            crate::tr!(
+                format!("GitHub недоступен или релизов ещё нет ({e})"),
+                format!("GitHub is unreachable or there are no releases yet ({e})")
+            )
+        );
     }
     let effective = String::from_utf8_lossy(&out.stdout).to_string();
     let tag = effective.rsplit("/tag/").next().filter(|_| effective.contains("/tag/"));
     match tag {
         Some(t) => Ok(t.trim().trim_start_matches('v').to_string()),
-        None => bail!("не удалось определить последнюю версию по {effective}"),
+        None => bail!(
+            "{}",
+            crate::tr!(
+                format!("не удалось определить последнюю версию по {effective}"),
+                format!("could not find the latest version from {effective}")
+            )
+        ),
     }
 }
 
@@ -70,9 +83,14 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn download(url: &str, dest: &Path) -> Result<()> {
-    let st = curl().args(["-o"]).arg(dest).arg(url).status().context("не удалось запустить curl")?;
+    let st = curl()
+        .args(["-o"])
+        .arg(dest)
+        .arg(url)
+        .status()
+        .context(crate::tr!("не удалось запустить curl", "could not run curl"))?;
     if !st.success() {
-        bail!("не скачался {url}");
+        bail!("{}", crate::tr!(format!("не скачался {url}"), format!("download failed: {url}")));
     }
     Ok(())
 }
@@ -99,17 +117,41 @@ fn old_path(exe: &Path) -> PathBuf {
 }
 
 /// `mctui update`: скачивает свежую сборку, проверяет SHA-256 и подменяет текущий бинарник.
-pub fn run_cli(force: bool) -> Result<()> {
-    let asset = asset_name().context("для этой платформы нет готовых сборок")?;
-    println!("mctui {VERSION} — проверяю обновления ({REPO})…");
+/// `mctui update`. Возвращает true, если программа заменена.
+pub fn run_cli(force: bool) -> Result<bool> {
+    let exe = self_path()?;
+    if exe.components().any(|c| c.as_os_str() == "Cellar") {
+        println!(
+            "{}",
+            crate::tr!(
+                "mctui установлен через Homebrew — обновление: brew upgrade mctui",
+                "mctui was installed with Homebrew — update with: brew upgrade mctui"
+            )
+        );
+        return Ok(false);
+    }
+    let asset = asset_name()
+        .context(crate::tr!("для этой платформы нет готовых сборок", "no prebuilt binaries for this platform"))?;
+    println!(
+        "{}",
+        crate::tr!(
+            format!("mctui {VERSION} — проверяю обновления ({REPO})…"),
+            format!("mctui {VERSION} — checking for updates ({REPO})…")
+        )
+    );
     let latest = latest_version()?;
     if !force && !is_newer(&latest, VERSION) {
-        println!("Установлена последняя версия ({VERSION}).");
-        return Ok(());
+        println!(
+            "{}",
+            crate::tr!(
+                format!("Установлена последняя версия ({VERSION})."),
+                format!("You have the latest version ({VERSION}).")
+            )
+        );
+        return Ok(false);
     }
-    println!("Скачиваю {latest}…");
-    let exe = self_path()?;
-    let dir = exe.parent().context("нет папки программы")?;
+    println!("{}", crate::tr!(format!("Скачиваю {latest}…"), format!("Downloading {latest}…")));
+    let dir = exe.parent().context("exe dir")?;
     let new = dir.join(format!(".mctui-update-{}", std::process::id()));
     let sum = dir.join(format!(".mctui-update-{}.sha256", std::process::id()));
     let base = format!("https://github.com/{REPO}/releases/download/v{latest}");
@@ -119,15 +161,28 @@ pub fn run_cli(force: bool) -> Result<()> {
         let expected = std::fs::read_to_string(&sum)?.split_whitespace().next().unwrap_or("").to_lowercase();
         let actual = sha256_hex(&std::fs::read(&new)?);
         if expected != actual {
-            bail!("контрольная сумма не совпала (ожидалось {expected}, получено {actual})");
+            bail!(
+                "{}",
+                crate::tr!(
+                    format!("контрольная сумма не совпала (ожидалось {expected}, получено {actual})"),
+                    format!("checksum mismatch (expected {expected}, got {actual})")
+                )
+            );
         }
         replace_self(&exe, &new)
     })();
     let _ = std::fs::remove_file(&new);
     let _ = std::fs::remove_file(&sum);
     res?;
-    println!("Готово: mctui обновлён до {latest}. Настройки сохранены ({}).", crate::config::default_path().display());
-    Ok(())
+    let cfg = crate::config::default_path();
+    println!(
+        "{}",
+        crate::tr!(
+            format!("Готово: mctui обновлён до {latest}. Настройки сохранены ({}).", cfg.display()),
+            format!("Done: mctui updated to {latest}. Settings kept ({}).", cfg.display())
+        )
+    );
+    Ok(true)
 }
 
 fn replace_self(exe: &Path, new: &Path) -> Result<()> {
@@ -141,10 +196,17 @@ fn replace_self(exe: &Path, new: &Path) -> Result<()> {
         // Запущенный exe нельзя перезаписать, но можно переименовать.
         let old = old_path(exe);
         let _ = std::fs::remove_file(&old);
-        std::fs::rename(exe, &old).context("не удалось переименовать текущий mctui.exe")?;
+        std::fs::rename(exe, &old).context(crate::tr!(
+            "не удалось переименовать текущий mctui.exe",
+            "could not rename the running mctui.exe"
+        ))?;
     }
-    std::fs::rename(new, exe)
-        .with_context(|| format!("нет прав на запись в {} — запустите обновление с нужными правами", exe.display()))?;
+    std::fs::rename(new, exe).with_context(|| {
+        crate::tr!(
+            format!("нет прав на запись в {} — запустите обновление с нужными правами", exe.display()),
+            format!("no write access to {} — run the update with the right permissions", exe.display())
+        )
+    })?;
     Ok(())
 }
 

@@ -133,6 +133,7 @@ pub fn read(server_dir: &Path, list: List) -> Result<Vec<Entry>> {
 }
 
 /// Есть ли запись в списке (ник без учёта регистра, UUID или IP).
+#[cfg(test)]
 pub fn contains(server_dir: &Path, list: List, name_or_ip: &str) -> Result<bool> {
     let entries = load_raw(&list.path(server_dir))?;
     Ok(entries.iter().any(|e| matches(list, e, name_or_ip.trim())))
@@ -234,10 +235,8 @@ pub fn whitelist_switch_command(enabled: bool) -> &'static str {
     if enabled { "whitelist on" } else { "whitelist off" }
 }
 
-/// Перечитать whitelist.json на запущенном сервере.
-pub const WHITELIST_RELOAD_COMMAND: &str = "whitelist reload";
-
 /// UUID игрока: online-mode — из Mojang API, offline-mode — [`offline_uuid`].
+#[cfg(test)]
 pub fn resolve_uuid(name: &str, online_mode: bool) -> Result<String> {
     Ok(resolve_profile(name, online_mode)?.uuid)
 }

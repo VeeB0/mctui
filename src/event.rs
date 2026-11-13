@@ -26,6 +26,13 @@ pub enum BackupEvent {
     Failed(String),
 }
 
+#[derive(Debug)]
+pub enum RestoreEvent {
+    Progress(String),
+    Done { stash: PathBuf },
+    Failed(String),
+}
+
 /// `id` — постоянный идентификатор сервера (индекс в списке меняется при удалении).
 #[derive(Debug)]
 pub enum AppEvent {
@@ -48,6 +55,25 @@ pub enum AppEvent {
         id: usize,
         ev: BackupEvent,
     },
+    Restore {
+        id: usize,
+        ev: RestoreEvent,
+    },
     /// Вышла новая версия mctui.
     UpdateAvailable(String),
+    /// Сообщение от фоновой службы (в окне TUI).
+    Daemon(Box<crate::proto::Msg>),
+    /// Связь со службой потеряна / не установлена.
+    DaemonLost(String),
+    /// Результат фоновой работы окна (список версий, создание сервера, проверка плагинов…).
+    Ui(UiTask),
+}
+
+/// Действие над окном из фонового потока.
+pub struct UiTask(pub Box<dyn FnOnce(&mut crate::app::App) + Send>);
+
+impl std::fmt::Debug for UiTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UiTask")
+    }
 }

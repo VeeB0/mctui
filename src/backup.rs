@@ -1,6 +1,7 @@
 //! Бэкапы: save-off → save-all flush → tar.gz → save-on, ротация.
 
 use crate::event::{AppEvent, BackupEvent};
+use crate::tr;
 use anyhow::{Context, Result};
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -54,10 +55,16 @@ pub async fn run(job: BackupJob, tx: mpsc::UnboundedSender<AppEvent>) {
         })
         .await;
         if !matches!(waited, Ok(true)) {
-            warning = Some("сервер не подтвердил сохранение (Saved the game) — архив может быть неполным".to_string());
+            warning = Some(
+                tr!(
+                    "сервер не подтвердил сохранение (Saved the game) — архив может быть неполным",
+                    "the server did not confirm the save (Saved the game) — the archive may be incomplete"
+                )
+                .to_string(),
+            );
         }
     }
-    progress("архивирование…".into());
+    progress(tr!("архивирование…", "archiving…").into());
     let tx2 = tx.clone();
     let (root, paths, dir, prefix, keep) = (job.root, job.paths, job.backup_dir, file_prefix(&job.name), job.keep);
     let result = tokio::task::spawn_blocking(move || {
@@ -65,7 +72,8 @@ pub async fn run(job: BackupJob, tx: mpsc::UnboundedSender<AppEvent>) {
         let dest = dir.join(format!("{prefix}-{stamp}.tar.gz"));
         let bytes = create_archive(&root, &paths, &dest, |n| {
             let _ = tx2.send(AppEvent::Backup {
-                id, ev: BackupEvent::Progress(format!("архивирование… {n} файлов"))
+                id,
+                ev: BackupEvent::Progress(tr!(format!("архивирование… {n} файлов"), format!("archiving… {n} files"))),
             });
         })?;
         rotate(&dir, &prefix, keep)?;
@@ -83,13 +91,73 @@ pub async fn run(job: BackupJob, tx: mpsc::UnboundedSender<AppEvent>) {
     let _ = tx.send(AppEvent::Backup { id, ev });
 }
 
+/// Сколько копий «мира до восстановления» хранить в `.mctui-before-restore/`.
+const KEEP_BEFORE_RESTORE: usize = 3;
+
+/// Восстановление из архива (сервер должен быть остановлен). Текущие `paths` не удаляются, а
+/// переносятся в `<root>/.mctui-before-restore/<время>/` (хранятся последние 3). Возвращает эту папку.
+pub fn restore(root: &Path, archive: &Path, paths: &[String], mut progress: impl FnMut(String)) -> Result<PathBuf> {
+    // Проверяем архив до того, как что-то трогать.
+    progress(crate::tr!("проверка архива…", "checking archive…").into());
+    let open = || -> Result<tar::Archive<flate2::read::GzDecoder<std::fs::File>>> {
+        let f = std::fs::File::open(archive).with_context(|| archive.display().to_string())?;
+        Ok(tar::Archive::new(flate2::read::GzDecoder::new(f)))
+    };
+    let mut total = 0u64;
+    for e in open()?.entries()? {
+        let e = e?;
+        let p = e.path()?.into_owned();
+        if p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            anyhow::bail!(crate::tr!(
+                format!("в архиве недопустимый путь: {}", p.display()),
+                format!("archive contains an unsafe path: {}", p.display())
+            ));
+        }
+        total += 1;
+    }
+    let stash_root = root.join(".mctui-before-restore");
+    let stash = stash_root.join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    std::fs::create_dir_all(&stash).with_context(|| stash.display().to_string())?;
+    for p in paths {
+        let src = root.join(p);
+        if src.exists() {
+            let dst = stash.join(p);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(&src, &dst).with_context(|| format!("{} → {}", src.display(), dst.display()))?;
+        }
+    }
+    let mut done = 0u64;
+    for e in open()?.entries()? {
+        let mut e = e?;
+        e.unpack_in(root)?;
+        done += 1;
+        if done.is_multiple_of(200) {
+            progress(crate::tr!(format!("распаковка… {done}/{total}"), format!("extracting… {done}/{total}")));
+        }
+    }
+    // Ротация старых копий.
+    if let Ok(rd) = std::fs::read_dir(&stash_root) {
+        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        while dirs.len() > KEEP_BEFORE_RESTORE {
+            let _ = std::fs::remove_dir_all(dirs.remove(0));
+        }
+    }
+    Ok(stash)
+}
+
 /// Пакует `paths` (относительно `root`) в `dest` (.tar.gz). Пишет во временный файл и переименовывает.
 pub fn create_archive(root: &Path, paths: &[String], dest: &Path, mut progress: impl FnMut(u64)) -> Result<u64> {
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("не создать {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| {
+            tr!(format!("не создать {}", parent.display()), format!("cannot create {}", parent.display()))
+        })?;
     }
     let part = dest.with_extension("gz.part");
-    let file = std::fs::File::create(&part).with_context(|| format!("не создать {}", part.display()))?;
+    let file = std::fs::File::create(&part)
+        .with_context(|| tr!(format!("не создать {}", part.display()), format!("cannot create {}", part.display())))?;
     let mut tar = tar::Builder::new(GzEncoder::new(file, Compression::default()));
     tar.follow_symlinks(false);
     let mut count = 0u64;
@@ -97,7 +165,10 @@ pub fn create_archive(root: &Path, paths: &[String], dest: &Path, mut progress: 
         for p in paths {
             let src = root.join(p);
             if !src.exists() {
-                anyhow::bail!("нет пути {}", src.display());
+                anyhow::bail!(
+                    "{}",
+                    tr!(format!("нет пути {}", src.display()), format!("path not found: {}", src.display()))
+                );
             }
             add_tree(&mut tar, &src, Path::new(p), &mut count, &mut progress)?;
         }
@@ -131,7 +202,8 @@ fn add_tree<W: std::io::Write>(
         if src.file_name().is_some_and(|n| n == "session.lock") {
             return Ok(());
         }
-        tar.append_path_with_name(src, name).with_context(|| format!("файл {}", src.display()))?;
+        tar.append_path_with_name(src, name)
+            .with_context(|| tr!(format!("файл {}", src.display()), format!("file {}", src.display())))?;
         *count += 1;
         if (*count).is_multiple_of(200) {
             progress(*count);
@@ -210,5 +282,25 @@ mod tests {
     #[test]
     fn prefix_is_sanitized() {
         assert_eq!(file_prefix("My Server/1"), "My_Server_1");
+    }
+
+    #[test]
+    fn restore_moves_current_world_aside() {
+        let root = std::env::temp_dir().join(format!("mctui-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("world/region")).unwrap();
+        std::fs::write(root.join("world/level.dat"), b"old-good").unwrap();
+        std::fs::write(root.join("world/region/r.0.0.mca"), b"chunk").unwrap();
+        let arc = root.join("backups/b.tar.gz");
+        create_archive(&root, &["world".into()], &arc, |_| {}).unwrap();
+        // мир «испортили»
+        std::fs::write(root.join("world/level.dat"), b"broken").unwrap();
+        std::fs::write(root.join("world/new.txt"), b"junk").unwrap();
+        let stash = restore(&root, &arc, &["world".into()], |_| {}).unwrap();
+        assert_eq!(std::fs::read(root.join("world/level.dat")).unwrap(), b"old-good");
+        assert!(root.join("world/region/r.0.0.mca").exists());
+        assert!(!root.join("world/new.txt").exists());
+        assert_eq!(std::fs::read(stash.join("world/level.dat")).unwrap(), b"broken");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

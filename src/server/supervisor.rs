@@ -20,6 +20,11 @@ impl CrashPolicy {
         Self { history: VecDeque::new(), max, window }
     }
 
+    /// Ручной запуск пользователем сбрасывает счётчик падений.
+    pub fn reset(&mut self) {
+        self.history.clear();
+    }
+
     pub fn on_crash(&mut self, now: Instant) -> Decision {
         while let Some(&t) = self.history.front() {
             if now.duration_since(t) > self.window {

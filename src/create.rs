@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use crate::tr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Core {
     Paper,
     Purpur,

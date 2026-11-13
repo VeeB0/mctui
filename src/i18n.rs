@@ -19,13 +19,6 @@ pub enum Lang {
 }
 
 impl Lang {
-    pub fn code(self) -> &'static str {
-        match self {
-            Lang::Ru => "ru",
-            Lang::En => "en",
-        }
-    }
-
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().to_ascii_lowercase();
         if s.starts_with("ru") {

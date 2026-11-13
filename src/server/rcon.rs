@@ -39,7 +39,10 @@ pub fn encode(p: &Packet) -> Vec<u8> {
 pub async fn read_packet<R: AsyncRead + Unpin>(r: &mut R) -> Result<Packet> {
     let len = r.read_i32_le().await?;
     if !(10..=MAX_PACKET).contains(&len) {
-        bail!("некорректная длина пакета RCON: {len}");
+        bail!(
+            "{}",
+            crate::tr!(format!("некорректная длина пакета RCON: {len}"), format!("invalid RCON packet length: {len}"))
+        );
     }
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf).await?;
@@ -71,7 +74,7 @@ impl RconClient {
         loop {
             let p = timeout(IO_TIMEOUT, read_packet(&mut c.stream)).await??;
             if p.id == -1 {
-                bail!("неверный пароль RCON");
+                bail!("{}", crate::tr!("неверный пароль RCON", "wrong RCON password"));
             }
             // Некоторые реализации сначала шлют пустой RESPONSE_VALUE — ждём AUTH_RESPONSE (type 2).
             if p.kind == TYPE_COMMAND && p.id == id {

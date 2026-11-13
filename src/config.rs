@@ -4,6 +4,7 @@
 //! - macOS / Linux: `~/.config/mctui/servers.toml`
 //! - Windows: `%APPDATA%\mctui\servers.toml`
 
+use crate::tr;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -45,6 +46,15 @@ pub struct ServerConfig {
     pub backup_dir: String,
     #[serde(default = "d_backup_keep")]
     pub backup_keep: usize,
+    /// Запускать сервер вместе с фоновой службой (при входе в систему).
+    #[serde(default)]
+    pub autostart: bool,
+    /// Авто-бэкап каждые N часов, пока сервер работает (0 — выключен).
+    #[serde(default)]
+    pub backup_every_hours: u32,
+    /// Ежедневный рестарт в указанное местное время, "HH:MM" (с предупреждениями игрокам).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restart_times: Vec<String>,
     // --- RCON ---
     #[serde(default = "d_host")]
     pub host: String,
@@ -100,6 +110,9 @@ impl ServerConfig {
             backup_paths: d_backup_paths(),
             backup_dir: d_backup_dir(),
             backup_keep: d_backup_keep(),
+            autostart: false,
+            backup_every_hours: 0,
+            restart_times: vec![],
             host: d_host(),
             port: d_port(),
             password: None,
@@ -125,6 +138,28 @@ impl ServerConfig {
             Kind::Local => Some(self.dir().join("server.properties")),
             Kind::Rcon => None,
         }
+    }
+
+    /// Лимит памяти Java (-Xmx) в МиБ: из аргументов команды или из скрипта запуска.
+    pub fn max_memory_mb(&self) -> Option<u64> {
+        if self.kind != Kind::Local {
+            return None;
+        }
+        let mut text = self.command.join(" ");
+        if let Some(script) = self.command.iter().find(|a| {
+            let l = a.to_ascii_lowercase();
+            l.ends_with(".sh") || l.ends_with(".bat") || l.ends_with(".cmd") || l.ends_with(".command")
+        }) && let Ok(t) = std::fs::read_to_string(self.dir().join(script))
+        {
+            text.push(' ');
+            text.push_str(&t);
+        }
+        parse_xmx(&text)
+    }
+
+    /// Время рестартов по расписанию как (час, минута); неверные записи пропускаются.
+    pub fn restart_hm(&self) -> Vec<(u32, u32)> {
+        self.restart_times.iter().filter_map(|t| parse_hm(t)).collect()
     }
 
     /// ops.json: в папке локального сервера; для RCON — рядом с log_path (…/logs/latest.log → …/ops.json).
@@ -156,6 +191,36 @@ impl ServerConfig {
 }
 
 /// Путь к конфигу по умолчанию (можно переопределить переменной MCTUI_CONFIG).
+/// "-Xmx4G" / "-Xmx4096M" / "-Xmx4g" → МиБ (последнее вхождение побеждает, как у Java).
+pub fn parse_xmx(text: &str) -> Option<u64> {
+    let mut found = None;
+    for (i, _) in text.match_indices("-Xmx") {
+        let rest = &text[i + 4..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(n) = digits.parse::<u64>() else { continue };
+        let unit = rest[digits.len()..].chars().next().map(|c| c.to_ascii_lowercase());
+        found = Some(match unit {
+            Some('g') => n * 1024,
+            Some('m') => n,
+            Some('k') => n / 1024,
+            _ => n / (1024 * 1024),
+        });
+    }
+    found
+}
+
+/// "05:00" / "5:30" → (5, 0) / (5, 30).
+pub fn parse_hm(t: &str) -> Option<(u32, u32)> {
+    let (h, m) = t.trim().split_once(':')?;
+    let (h, m): (u32, u32) = (h.trim().parse().ok()?, m.trim().parse().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// Папка служебных файлов (daemon.json, история графиков) — рядом с servers.toml.
+pub fn state_dir(config_path: &Path) -> PathBuf {
+    config_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+}
+
 pub fn default_path() -> PathBuf {
     if let Some(p) = std::env::var_os("MCTUI_CONFIG") {
         return PathBuf::from(p);
@@ -174,10 +239,19 @@ impl Config {
         let cfg: Config = toml::from_str(text)?;
         for s in &cfg.servers {
             if s.kind == Kind::Local && s.dir.is_none() {
-                bail!("сервер «{}»: для kind = \"local\" нужен dir", s.name);
+                bail!(
+                    "{}",
+                    tr!(
+                        format!("сервер «{}»: для kind = \"local\" нужен dir", s.name),
+                        format!("server “{}”: kind = \"local\" needs dir", s.name)
+                    )
+                );
             }
             if s.kind == Kind::Local && s.command.is_empty() {
-                bail!("сервер «{}»: пустой command", s.name);
+                bail!(
+                    "{}",
+                    tr!(format!("сервер «{}»: пустой command", s.name), format!("server “{}”: empty command", s.name))
+                );
             }
         }
         Ok(cfg)
@@ -189,18 +263,27 @@ impl Config {
         if !path.exists() {
             return Ok((Self::default(), path));
         }
-        let text = std::fs::read_to_string(&path).with_context(|| format!("не читается {}", path.display()))?;
-        let cfg = Self::parse(&text).with_context(|| format!("ошибка в {}", path.display()))?;
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            tr!(format!("не читается {}", path.display()), format!("cannot read {}", path.display()))
+        })?;
+        let cfg = Self::parse(&text)
+            .with_context(|| tr!(format!("ошибка в {}", path.display()), format!("error in {}", path.display())))?;
         Ok((cfg, path))
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("не создать {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                tr!(format!("не создать {}", parent.display()), format!("cannot create {}", parent.display()))
+            })?;
         }
         let body = toml::to_string_pretty(self)?;
         let text = format!(
-            "# Настройки mctui. Файл можно править руками; обновление программы его не трогает.\n# Описание полей: https://github.com/{}/blob/main/servers.example.toml\n\n{body}",
+            "{}\n# https://github.com/{}/blob/main/servers.example.toml\n\n{body}",
+            tr!(
+                "# Настройки mctui. Файл можно править руками; обновление программы его не трогает.",
+                "# mctui settings. You can edit this file by hand; updates do not touch it."
+            ),
             crate::update::REPO
         );
         let tmp = path.with_extension("toml.tmp");
@@ -315,7 +398,7 @@ fn jar_command(dir: &Path, jar: &str) -> Vec<String> {
 pub fn detect_local(input: &str) -> Detection {
     let mut d = Detection::default();
     if input.trim().is_empty() {
-        d.error = Some("Вставьте путь к папке сервера".into());
+        d.error = Some(tr!("Вставьте путь к папке сервера", "Paste the path to the server folder").into());
         return d;
     }
     let mut path = normalize_path_input(input);
@@ -325,7 +408,8 @@ pub fn detect_local(input: &str) -> Detection {
         path = path.parent().map(Path::to_path_buf).unwrap_or(path);
     }
     if !path.is_dir() {
-        d.error = Some(format!("Папка не найдена: {}", path.display()));
+        d.error =
+            Some(tr!(format!("Папка не найдена: {}", path.display()), format!("Folder not found: {}", path.display())));
         return d;
     }
     let path = path.canonicalize().unwrap_or(path);
@@ -335,11 +419,11 @@ pub fn detect_local(input: &str) -> Detection {
         if cfg!(windows) { &["start.bat", "run.bat", "start.cmd"] } else { &["start.sh", "run.sh", "start.command"] };
     let cmd = match chosen_file {
         Some(f) if f.ends_with(".jar") => Some((jar_command(&path, &f), format!("jar: {f}"))),
-        Some(f) => Some((script_command(&path, &f), format!("скрипт запуска: {f}"))),
+        Some(f) => Some((script_command(&path, &f), tr!(format!("скрипт запуска: {f}"), format!("start script: {f}")))),
         None => scripts
             .iter()
             .find(|s| path.join(s).is_file())
-            .map(|s| (script_command(&path, s), format!("скрипт запуска: {s}")))
+            .map(|s| (script_command(&path, s), tr!(format!("скрипт запуска: {s}"), format!("start script: {s}"))))
             .or_else(|| pick_jar(&path).map(|j| (jar_command(&path, &j), format!("jar: {j}")))),
     };
     match cmd {
@@ -348,12 +432,24 @@ pub fn detect_local(input: &str) -> Detection {
             d.command = c;
         }
         None => {
-            d.error = Some("В папке нет скрипта запуска (start.sh / start.bat) и .jar сервера".into());
+            d.error = Some(
+                tr!(
+                    "В папке нет скрипта запуска (start.sh / start.bat) и .jar сервера",
+                    "No start script (start.sh / start.bat) or server .jar in the folder"
+                )
+                .into(),
+            );
             return d;
         }
     }
     if d.command[0] == "java" && !d.command.is_empty() {
-        d.warnings.push("Java будет взята из PATH — убедитесь, что установлена нужная версия".into());
+        d.warnings.push(
+            tr!(
+                "Java будет взята из PATH — убедитесь, что установлена нужная версия",
+                "Java comes from PATH — make sure the right version is installed"
+            )
+            .into(),
+        );
     } else if d.command[0].contains("java") {
         d.found.push(format!("Java: {}", d.command[0]));
     }
@@ -362,18 +458,30 @@ pub fn detect_local(input: &str) -> Detection {
         Ok(text) => {
             let props = crate::properties::Properties::parse(&text);
             let port = props.get("server-port").unwrap_or("25565").to_string();
-            d.found.push(format!("server.properties (порт {port})"));
+            d.found.push(tr!(format!("server.properties (порт {port})"), format!("server.properties (port {port})")));
             let level = props.get("level-name").unwrap_or("world").to_string();
             d.backup_paths = vec![level];
         }
         Err(_) => {
-            d.warnings.push("server.properties нет — сервер создаст его при первом запуске".into());
+            d.warnings.push(
+                tr!(
+                    "server.properties нет — сервер создаст его при первом запуске",
+                    "no server.properties — the server creates it on first start"
+                )
+                .into(),
+            );
             d.backup_paths = d_backup_paths();
         }
     }
     let eula = std::fs::read_to_string(path.join("eula.txt")).unwrap_or_default();
     if !eula.lines().any(|l| l.trim() == "eula=true") {
-        d.warnings.push("EULA не принята: сервер не запустится, пока в eula.txt не будет eula=true".into());
+        d.warnings.push(
+            tr!(
+                "EULA не принята: сервер не запустится, пока в eula.txt не будет eula=true",
+                "EULA not accepted: the server will not start until eula.txt has eula=true"
+            )
+            .into(),
+        );
     }
     d.dir = Some(path);
     d
@@ -470,5 +578,17 @@ mod tests {
         let r2 = detect_local(d.join(script).to_str().unwrap());
         assert_eq!(r2.dir, r.dir);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn xmx_and_times() {
+        assert_eq!(parse_xmx("java -Xms2G -Xmx4G -jar x.jar"), Some(4096));
+        assert_eq!(parse_xmx("-Xmx512m"), Some(512));
+        assert_eq!(parse_xmx("-Xmx2G ... -Xmx6g"), Some(6144));
+        assert_eq!(parse_xmx("java -jar x.jar"), None);
+        assert_eq!(parse_hm("05:00"), Some((5, 0)));
+        assert_eq!(parse_hm(" 7:30 "), Some((7, 30)));
+        assert_eq!(parse_hm("24:00"), None);
+        assert_eq!(parse_hm("abc"), None);
     }
 }

@@ -2,3 +2,4 @@
 /servers.toml
 .serena/
 .DS_Store
+.claude/

@@ -90,6 +90,7 @@ pub struct UpdateInfo {
     pub url: String,
     pub sha1: Option<String>,
     /// Страница версии на Modrinth.
+    #[allow(dead_code)] // пригодится для ссылки «что нового»
     pub page: String,
 }
 

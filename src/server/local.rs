@@ -35,7 +35,12 @@ impl LocalProc {
         cmd.process_group(0);
         #[cfg(windows)]
         cmd.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
-        let mut child = cmd.spawn().with_context(|| format!("не удалось запустить {}", program.display()))?;
+        let mut child = cmd.spawn().with_context(|| {
+            crate::tr!(
+                format!("не удалось запустить {}", program.display()),
+                format!("could not start {}", program.display())
+            )
+        })?;
         let pid = child.id().unwrap_or(0);
 
         let (lines_tx, _) = broadcast::channel(1024);
@@ -70,7 +75,9 @@ impl LocalProc {
             };
             let status = match status {
                 Ok(s) => describe_status(s),
-                Err(e) => format!("ошибка ожидания процесса: {e}"),
+                Err(e) => {
+                    crate::tr!(format!("ошибка ожидания процесса: {e}"), format!("error waiting for the process: {e}"))
+                }
             };
             let _ = tx.send(AppEvent::Exited { id, pid, status });
         });
@@ -117,13 +124,13 @@ fn describe_status(s: std::process::ExitStatus) -> String {
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(sig) = s.signal() {
-            return format!("убит сигналом {sig}");
+            return crate::tr!(format!("убит сигналом {sig}"), format!("killed by signal {sig}"));
         }
     }
     match s.code() {
-        Some(0) => "код 0".into(),
-        Some(c) => format!("код {c}"),
-        None => "неизвестный статус".into(),
+        Some(0) => crate::tr!("код 0", "exit code 0").into(),
+        Some(c) => crate::tr!(format!("код {c}"), format!("exit code {c}")),
+        None => crate::tr!("неизвестный статус", "unknown status").into(),
     }
 }
 
