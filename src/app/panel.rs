@@ -376,9 +376,12 @@ impl App {
                     }
                 }
                 Err(e) => {
+                    // Подсказка «Enter — повторить» верна только для первой загрузки популярного: на следующей
+                    // странице Enter в списке ставит выбранную строку.
+                    let first_load = popular && *cur_page == 0;
                     // Следующая «n» повторит ту же страницу, а не перескочит через неё.
                     *cur_page = cur_page.saturating_sub(1);
-                    let retry = if popular && *cur_page == 0 {
+                    let retry = if first_load {
                         tr!(" · Enter — повторить", " · Enter to retry")
                     } else {
                         ""

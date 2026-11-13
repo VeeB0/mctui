@@ -1024,6 +1024,25 @@ async fn addon_search_failed_popular_offers_retry() {
 }
 
 #[tokio::test]
+async fn addon_search_failed_next_page_has_no_retry_hint() {
+    use crate::plugin_search::Source;
+    let srv = paper_search("retry-next-page");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        let more = hit_from(Source::Modrinth, "First").map(|r| crate::plugin_search::SearchResults { more: true, ..r });
+        a.apply_plugin_search(search_req(&a), more);
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        a.apply_plugin_search(search_req(&a), Err(anyhow::anyhow!("boom")));
+        let p = panel_of(&a);
+        assert!(p.lines[0].text.contains("boom"), "{}", p.lines[0].text);
+        assert!(!p.lines[0].text.contains("Enter to retry"), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
 async fn addon_search_dedupes_project_across_pages() {
     use crate::plugin_search::Source;
     let srv = paper_search("dedupe-pages");
