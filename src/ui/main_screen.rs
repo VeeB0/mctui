@@ -3,7 +3,8 @@
 use super::layout;
 use super::theme;
 use crate::app::{
-    App, BackupHealth, Focus, ServerUi, SubLevel, TABS, Tab, ToastKind, WorldRow, ago, human_bytes, human_duration,
+    AddonsSub, App, BackupHealth, Focus, ServerUi, SubLevel, TABS, Tab, ToastKind, WorldRow, ago, human_bytes,
+    human_duration,
 };
 use crate::config::Kind;
 use crate::plugins::PluginKind;
@@ -46,7 +47,7 @@ pub fn draw(app: &App, f: &mut Frame) {
         Tab::Status => draw_status(app, f, l.content, focused),
         Tab::Players => draw_players(app, f, l.content, focused),
         Tab::Access => draw_access(app, f, l.content, focused),
-        Tab::Plugins => draw_plugins(app, f, l.content, focused),
+        Tab::Addons => draw_addons(app, f, l.content, focused),
         Tab::Settings => draw_settings(app, f, l.content, focused),
         Tab::Backups => draw_backups(app, f, l.content, focused),
         Tab::World => draw_world(app, f, l.content, focused),
@@ -604,28 +605,43 @@ fn draw_access(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     f.render_stateful_widget(table, list_area, &mut st);
 }
 
-fn draw_plugins(app: &App, f: &mut Frame, area: Rect, focused: bool) {
-    let s = app.sel();
-    let p = &app.plugins;
-    let n_plugins = p.items.iter().filter(|x| x.kind == PluginKind::Plugin).count();
-    let n_mods = p.items.len() - n_plugins;
-    let title = match (n_plugins, n_mods) {
-        (_, 0) => tr!(format!("Плагины ({n_plugins})"), format!("Plugins ({n_plugins})")),
-        (0, m) => tr!(format!("Моды ({m})"), format!("Mods ({m})")),
-        (a, m) => tr!(format!("Плагины ({a}) и моды ({m})"), format!("Plugins ({a}) and mods ({m})")),
-    };
-    if !s.is_local() {
+fn draw_addons(app: &App, f: &mut Frame, area: Rect, focused: bool) {
+    let title = tr!("Дополнения", "Add-ons");
+    if !app.sel().is_local() {
         return muted_block(
             f,
             area,
-            &title,
+            title,
             focused,
-            tr!("Плагины доступны только для локальных серверов", "Plugins are only available for local servers"),
+            tr!("Дополнения доступны только для локальных серверов", "Add-ons are only available for local servers"),
         );
     }
-    let outer = block(&title, focused);
+    let p = &app.plugins;
+    let n_plugins = p.items.iter().filter(|x| x.kind == PluginKind::Plugin).count();
+    let n_mods = p.items.len() - n_plugins;
+    let n = p.items.len();
+    let plugins_label = match (n_plugins, n_mods) {
+        (_, 0) => tr!(format!("Плагины ({n})"), format!("Plugins ({n})")),
+        (0, _) => tr!(format!("Моды ({n})"), format!("Mods ({n})")),
+        _ => tr!(format!("Плагины и моды ({n})"), format!("Plugins and mods ({n})")),
+    };
+    let nd = app.datapacks.items.len();
+    let labels = vec![plugins_label, tr!(format!("Датапаки ({nd})"), format!("Datapacks ({nd})")).to_string()];
+    let active = if app.addons.sub == AddonsSub::Plugins { 0 } else { 1 };
+    let outer = block(title, focused);
     let inner = outer.inner(area);
     f.render_widget(outer, area);
+    let [tabs_area, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    f.render_widget(Paragraph::new(sub_tabs_line(&labels, active, app.addons.level, focused)), tabs_area);
+    let entries = focused && app.addons.level == SubLevel::Entries;
+    match app.addons.sub {
+        AddonsSub::Plugins => draw_plugins(app, f, body, entries),
+        AddonsSub::Datapacks => draw_datapacks(app, f, body, entries),
+    }
+}
+
+fn draw_plugins(app: &App, f: &mut Frame, inner: Rect, entries: bool) {
+    let p = &app.plugins;
     let [top, list_area, about] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(inner);
     if let Some(x) = p.items.get(p.sel) {
@@ -710,7 +726,75 @@ fn draw_plugins(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         .style(Style::new().fg(theme::MUTED)),
     )
     .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
-    let mut st = TableState::default().with_selected(focused.then_some(p.sel));
+    let mut st = TableState::default().with_selected(entries.then_some(p.sel));
+    f.render_stateful_widget(table, list_area, &mut st);
+}
+
+fn draw_datapacks(app: &App, f: &mut Frame, inner: Rect, entries: bool) {
+    let d = &app.datapacks;
+    let [top, list_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    let head = if let Some(b) = &d.busy {
+        Line::styled(format!("⏳ {b}"), Style::new().fg(theme::WARN))
+    } else if d.checking {
+        Line::styled(
+            tr!("⏳ проверка обновлений на Modrinth…", "⏳ checking Modrinth for updates…"),
+            Style::new().fg(theme::WARN),
+        )
+    } else {
+        let desc = d.items.get(d.sel).and_then(|x| x.description.clone()).unwrap_or_default();
+        Line::styled(desc, Style::new().fg(theme::MUTED))
+    };
+    f.render_widget(Paragraph::new(head), top);
+    if d.items.is_empty() {
+        f.render_widget(
+            Paragraph::new(tr!("Датапаков нет · i — найти и установить", "No datapacks · i to find and install"))
+                .fg(theme::MUTED),
+            list_area,
+        );
+        return;
+    }
+    let rows: Vec<Row> = d
+        .items
+        .iter()
+        .map(|x| {
+            let state = match (x.enabled, x.disabled_in_game) {
+                (true, false) => Span::styled(tr!("вкл", "on"), Style::new().fg(theme::OK)),
+                (true, true) => Span::styled(tr!("выкл в игре", "off in game"), Style::new().fg(theme::WARN)),
+                (false, _) => Span::styled(tr!("выкл", "off"), Style::new().fg(theme::MUTED)),
+            };
+            let mark = if x.worldgen {
+                tr!("мир", "world")
+            } else if x.needs_restart {
+                tr!("перезапуск", "restart")
+            } else {
+                ""
+            };
+            let version = d.versions.get(&x.path).map(String::as_str).unwrap_or("—");
+            let upd = d.updates.get(&x.path).map(|u| format!("→ {}", u.version)).unwrap_or_default();
+            let name_style = if x.enabled { Style::new().fg(theme::TEXT) } else { Style::new().fg(theme::MUTED) };
+            Row::new(vec![
+                Span::styled(x.name.clone(), name_style),
+                Span::styled(version.to_string(), Style::new().fg(theme::MUTED)),
+                state,
+                Span::styled(mark, Style::new().fg(theme::WARN)),
+                Span::styled(upd, Style::new().fg(theme::ACCENT).bold()),
+                Span::styled(x.description.clone().unwrap_or_default(), Style::new().fg(theme::MUTED)),
+            ])
+        })
+        .collect();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24),
+            Constraint::Length(14),
+            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Length(14),
+            Constraint::Min(10),
+        ],
+    )
+    .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
+    let mut st = TableState::default().with_selected(entries.then_some(d.sel));
     f.render_stateful_widget(table, list_area, &mut st);
 }
 
@@ -973,10 +1057,20 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
                 "↑↓ select · ←→ list · a add · d remove · w whitelist on/off · u reload"
             ),
         },
-        (Focus::Content, Tab::Plugins) => tr!(
-            "↑↓ выбор · i найти и установить · Пробел вкл/выкл · c обновления · Enter/U обновить · u перечитать",
-            "↑↓ select · i find & install · Space on/off · c updates · Enter/U update · u rescan"
-        ),
+        (Focus::Content, Tab::Addons) => match app.addons.level {
+            SubLevel::Tabs => tr!(
+                "←→ вкладки · ↓ к спискам · i найти и установить · c обновления · U обновить все · u перечитать",
+                "←→ tabs · ↓ to the lists · i find & install · c updates · U update all · u rescan"
+            ),
+            SubLevel::Lists => tr!(
+                "←→ плагины/датапаки · ↓ к записям · ↑ к вкладкам · i найти и установить · c обновления · u перечитать",
+                "←→ plugins/datapacks · ↓ to entries · ↑ to tabs · i find & install · c updates · u rescan"
+            ),
+            SubLevel::Entries => tr!(
+                "↑↓ выбор · ←→ плагины/датапаки · i найти и установить · Пробел вкл/выкл · c обновления · Enter/U обновить · u перечитать",
+                "↑↓ select · ←→ plugins/datapacks · i find & install · Space on/off · c updates · Enter/U update · u rescan"
+            ),
+        },
         (Focus::Content, Tab::Settings) => tr!(
             "↑↓ выбор · Enter изменить · Пробел вкл/выкл · r включить RCON · u перечитать",
             "↑↓ select · Enter edit · Space toggle · r enable RCON · u reload"

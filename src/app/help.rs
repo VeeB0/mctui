@@ -44,7 +44,18 @@ fn tab_keys(tab: Tab) -> Vec<(&'static str, &'static str)> {
             ("w", tr!("включить / выключить белый список", "turn the whitelist on / off")),
             ("u", tr!("перечитать", "reload")),
         ],
-        Tab::Plugins => vec![
+        Tab::Addons => vec![
+            (
+                "↓ / ↑",
+                tr!(
+                    "спуститься к подвкладкам и записям / подняться к вкладкам",
+                    "go down to the sub-tabs and entries / back up to the tabs"
+                ),
+            ),
+            (
+                tr!("←→ (в подвкладках) / [ ]", "←→ (in the sub-tabs) / [ ]"),
+                tr!("подвкладка: плагины или датапаки", "sub-tab: plugins or datapacks"),
+            ),
             ("i", tr!("найти и установить (Modrinth, Hangar)", "find & install (Modrinth, Hangar)")),
             (tr!("Пробел", "Space"), tr!("включить / выключить плагин", "enable / disable the plugin")),
             ("c", tr!("проверить обновления", "check for updates")),

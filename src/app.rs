@@ -8,6 +8,7 @@ use crate::access::{self, List};
 use crate::backup::{self, BackupInfo};
 use crate::client::Client;
 use crate::config::{Kind, ServerConfig};
+use crate::datapacks::{self, DatapackInfo};
 use crate::event::{AppEvent, UiTask};
 use crate::input::TextInput;
 use crate::log::{Level, LogBuffer, LogLine};
@@ -29,7 +30,9 @@ use tokio::sync::mpsc;
 pub use crate::core::human_bytes;
 
 mod access_tab;
+mod addons_tab;
 mod backup_health;
+mod datapacks_tab;
 mod events;
 mod help;
 mod keys;
@@ -64,14 +67,14 @@ pub enum Tab {
     Status,
     Players,
     Access,
-    Plugins,
+    Addons,
     Settings,
     Backups,
     World,
 }
 
 pub const TABS: [Tab; 7] =
-    [Tab::Status, Tab::Players, Tab::Access, Tab::Plugins, Tab::Settings, Tab::Backups, Tab::World];
+    [Tab::Status, Tab::Players, Tab::Access, Tab::Addons, Tab::Settings, Tab::Backups, Tab::World];
 
 impl Tab {
     pub fn title(self) -> &'static str {
@@ -79,7 +82,7 @@ impl Tab {
             Tab::Status => tr!("Статус", "Status"),
             Tab::Players => tr!("Игроки", "Players"),
             Tab::Access => tr!("Доступ", "Access"),
-            Tab::Plugins => tr!("Плагины", "Plugins"),
+            Tab::Addons => tr!("Дополнения", "Add-ons"),
             Tab::Settings => tr!("Настройки", "Settings"),
             Tab::Backups => tr!("Бэкапы", "Backups"),
             Tab::World => tr!("Мир", "World"),
@@ -247,15 +250,15 @@ impl ServerUi {
     }
 }
 
-/// Где стрелки на вкладке «Доступ»: ↓ спускает уровнем ниже, ↑ поднимает.
+/// Где стрелки на вкладках с подвкладками («Доступ», «Дополнения»): ↓ спускает уровнем ниже, ↑ поднимает.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SubLevel {
     /// ←→ листают вкладки окна, как на остальных вкладках.
     #[default]
     Tabs,
-    /// ←→ листают списки: белый, операторы, баны, IP.
+    /// ←→ листают подвкладки («Доступ»: белый список, операторы, баны, IP; «Дополнения»: плагины, датапаки).
     Lists,
-    /// ↑↓ выбирают запись, ←→ по-прежнему листают списки.
+    /// ↑↓ выбирают запись, ←→ по-прежнему листают подвкладки.
     Entries,
 }
 
@@ -278,6 +281,33 @@ pub struct PluginsView {
     pub checked: bool,
     pub busy: Option<String>,
     loaded_for: Option<usize>,
+}
+
+/// Подвкладка вкладки «Дополнения».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddonsSub {
+    #[default]
+    Plugins,
+    Datapacks,
+}
+
+/// Где стрелки на вкладке «Дополнения».
+pub struct AddonsNav {
+    pub sub: AddonsSub,
+    pub level: SubLevel,
+}
+
+pub struct DatapacksView {
+    pub items: Vec<DatapackInfo>,
+    pub sel: usize,
+    pub updates: HashMap<PathBuf, UpdateInfo>,
+    /// Версия на Modrinth по пути файла (известна после проверки обновлений).
+    pub versions: HashMap<PathBuf, String>,
+    pub checking: bool,
+    pub checked: bool,
+    pub busy: Option<String>,
+    /// (id сервера, папка мира), для которых загружен список.
+    loaded_for: Option<(usize, PathBuf)>,
 }
 
 /// Состояние автодополнения по Tab (повторный Tab — следующий вариант).
@@ -311,6 +341,8 @@ pub struct App {
     backups_at: Option<Instant>,
     pub access: AccessView,
     pub plugins: PluginsView,
+    pub addons: AddonsNav,
+    pub datapacks: DatapacksView,
     pub world: WorldView,
     pub logs: LogsView,
     /// Высота области лога из последней отрисовки — для прыжков к совпадениям.
@@ -394,6 +426,17 @@ impl App {
                 items: vec![],
                 sel: 0,
                 updates: HashMap::new(),
+                checking: false,
+                checked: false,
+                busy: None,
+                loaded_for: None,
+            },
+            addons: AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs },
+            datapacks: DatapacksView {
+                items: vec![],
+                sel: 0,
+                updates: HashMap::new(),
+                versions: HashMap::new(),
                 checking: false,
                 checked: false,
                 busy: None,
@@ -801,6 +844,8 @@ impl App {
         self.access.sel = 0;
         self.access.level = SubLevel::Tabs;
         self.plugins.sel = 0;
+        self.datapacks.sel = 0;
+        self.addons = AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs };
         self.world.sel = 0;
         self.completion = None;
         self.completion_hint = None;
@@ -821,7 +866,10 @@ impl App {
                 }
             }
             Tab::Backups => self.refresh_backups(),
-            Tab::Plugins => self.refresh_plugins(force),
+            Tab::Addons => {
+                self.refresh_plugins(force);
+                self.refresh_datapacks(force);
+            }
             Tab::World => self.refresh_world(force),
             _ => {}
         }
@@ -830,6 +878,7 @@ impl App {
     fn set_tab(&mut self, t: Tab) {
         self.tab = t;
         self.access.level = SubLevel::Tabs;
+        self.addons = AddonsNav { sub: AddonsSub::Plugins, level: SubLevel::Tabs };
         self.on_tab_shown(false);
     }
 }

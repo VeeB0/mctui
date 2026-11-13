@@ -271,7 +271,7 @@ async fn arrows_switch_tabs_on_access_tab() {
     key(&mut a, '3');
     assert_eq!(a.tab, Tab::Access);
     arrow(&mut a, KeyCode::Right);
-    assert_eq!(a.tab, Tab::Plugins, "→ уходит с «Доступа» на следующую вкладку");
+    assert_eq!(a.tab, Tab::Addons, "→ уходит с «Доступа» на следующую вкладку");
     arrow(&mut a, KeyCode::Left);
     arrow(&mut a, KeyCode::Left);
     assert_eq!(a.tab, Tab::Players, "← уходит с «Доступа» на предыдущую вкладку");
@@ -322,7 +322,74 @@ async fn access_tab_down_enters_lists_up_leaves() {
     arrow(&mut a, KeyCode::Up);
     assert_eq!(a.access.level, SubLevel::Tabs, "↑ из списков — обратно к вкладкам");
     arrow(&mut a, KeyCode::Right);
-    assert_eq!(a.tab, Tab::Plugins, "наверху → снова листает вкладки окна");
+    assert_eq!(a.tab, Tab::Addons, "наверху → снова листает вкладки окна");
     key(&mut a, '3');
     assert_eq!(a.access.level, SubLevel::Tabs, "вернулись на «Доступ» — снова наверху");
+}
+
+#[tokio::test]
+async fn addons_tab_levels_and_subtabs() {
+    use crate::app::{AddonsSub, SubLevel};
+    let arrow = |a: &mut App, code| a.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mut a = app(vec![local_running()]);
+    key(&mut a, '4');
+    assert_eq!((a.tab, a.addons.level, a.addons.sub), (Tab::Addons, SubLevel::Tabs, AddonsSub::Plugins));
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Settings, "→ на верхнем уровне листает вкладки окна");
+    arrow(&mut a, KeyCode::Left);
+    assert_eq!(a.tab, Tab::Addons);
+    arrow(&mut a, KeyCode::Down);
+    assert_eq!(a.addons.level, SubLevel::Lists);
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!((a.tab, a.addons.sub), (Tab::Addons, AddonsSub::Datapacks));
+    arrow(&mut a, KeyCode::Left);
+    assert_eq!(a.addons.sub, AddonsSub::Plugins);
+    key(&mut a, ']');
+    assert_eq!(a.addons.sub, AddonsSub::Datapacks, "] листает подвкладки");
+    arrow(&mut a, KeyCode::Up);
+    assert_eq!(a.addons.level, SubLevel::Tabs);
+    key(&mut a, '4');
+    assert_eq!((a.addons.sub, a.addons.level), (AddonsSub::Plugins, SubLevel::Tabs), "повторный 4 — всё сброшено");
+}
+
+#[tokio::test]
+async fn addons_on_rcon_server_arrows_switch_tabs() {
+    use crate::app::SubLevel;
+    let arrow = |a: &mut App, code| a.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mut a = app(vec![rcon_unreachable()]);
+    key(&mut a, '4');
+    arrow(&mut a, KeyCode::Down);
+    assert_eq!(a.addons.level, SubLevel::Tabs, "на RCON-сервере уровни не меняются");
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Settings);
+}
+
+#[tokio::test]
+async fn addons_datapacks_snapshot() {
+    use crate::datapacks::DatapackInfo;
+    let arrow = |a: &mut App, code| a.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let pack = |name: &str, enabled: bool, worldgen: bool, desc: Option<&str>| DatapackInfo {
+        path: PathBuf::from(NOWHERE).join(format!("{name}.zip")),
+        file_name: format!("{name}.zip"),
+        name: name.into(),
+        is_zip: true,
+        enabled,
+        disabled_in_game: false,
+        description: desc.map(Into::into),
+        worldgen,
+        needs_restart: worldgen,
+        sha1: String::new(),
+    };
+    with_lang(Lang::En, || {
+        let mut a = app(vec![local_running()]);
+        key(&mut a, '4');
+        arrow(&mut a, KeyCode::Down);
+        arrow(&mut a, KeyCode::Right);
+        let terralith = pack("Terralith", true, true, Some("Overhauls overworld generation"));
+        let vein = pack("VeinMiner", false, false, Some("Mine the whole vein"));
+        a.datapacks.versions.insert(terralith.path.clone(), "2.6.5+26.3".into());
+        a.datapacks.items = vec![terralith, vein];
+        arrow(&mut a, KeyCode::Down);
+        check("addons_datapacks_en", &render(&a, 120, 34));
+    });
 }

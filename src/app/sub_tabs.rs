@@ -35,6 +35,17 @@ pub(super) fn sub_arrow(level: &mut SubLevel, sel: &mut usize, len: usize, code:
     Arrow::Handled
 }
 
+impl App {
+    /// Выделение записи видно только на уровне записей — действие над ней без этого не выполняем,
+    /// а спускаем туда и подсказываем клавишу.
+    pub(super) fn toast_pick_entry(&mut self, key: &str) {
+        self.toast(
+            tr!(format!("Выберите запись ↑↓ и нажмите {key}"), format!("Pick an entry with ↑↓ and press {key}")),
+            ToastKind::Info,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

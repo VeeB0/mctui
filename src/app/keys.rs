@@ -146,9 +146,9 @@ impl App {
             return;
         }
         if self.focus == Focus::Content
-            && self.tab == Tab::Access
+            && matches!(self.tab, Tab::Access | Tab::Addons)
             && matches!(k.code, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
-            && self.access_arrow(k.code)
+            && if self.tab == Tab::Access { self.access_arrow(k.code) } else { self.addons_arrow(k.code) }
         {
             return;
         }
@@ -257,7 +257,18 @@ impl App {
                     }
                     self.access.sel = step(self.access.sel, self.access.entries.len())
                 }
-                Tab::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
+                Tab::Addons => {
+                    // PgUp/PgDn/Home/End и колесо мыши сразу ведут в записи.
+                    if self.addons_len() > 0 {
+                        self.addons.level = SubLevel::Entries;
+                    }
+                    match self.addons.sub {
+                        AddonsSub::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
+                        AddonsSub::Datapacks => {
+                            self.datapacks.sel = step(self.datapacks.sel, self.datapacks.items.len())
+                        }
+                    }
+                }
                 Tab::World => self.world.sel = step(self.world.sel, self.world.rows().len()),
                 Tab::Status => {}
             },
@@ -452,10 +463,7 @@ impl App {
                     // Выделение записи видно только на уровне записей — не удаляем то, чего не видно.
                     'd' if self.access.level != SubLevel::Entries && !self.access.entries.is_empty() => {
                         self.access.level = SubLevel::Entries;
-                        self.toast(
-                            tr!("Выберите запись ↑↓ и нажмите d", "Pick an entry with ↑↓ and press d"),
-                            ToastKind::Info,
-                        );
+                        self.toast_pick_entry("d");
                     }
                     'd' => {
                         if let Some(e) = self.access.entries.get(self.access.sel) {
@@ -478,14 +486,38 @@ impl App {
                     _ => {}
                 }
             }
-            Tab::Plugins => match c {
-                'i' | 'n' => self.open_plugin_search(),
-                ' ' => self.toggle_plugin(),
-                'c' => self.check_plugin_updates(),
-                'U' => self.ask_apply_updates(true),
-                'u' => self.refresh_plugins(true),
-                _ => {}
-            },
+            Tab::Addons => {
+                // [ ] (х ъ в русской раскладке) листают подвкладки с любого уровня.
+                match c {
+                    '[' => return self.cycle_addons_sub(-1),
+                    ']' => return self.cycle_addons_sub(1),
+                    _ => {}
+                }
+                if !self.sel().is_local() {
+                    return;
+                }
+                match self.addons.sub {
+                    // Датапаки: пока только перечитать (действия — позже).
+                    AddonsSub::Datapacks => {
+                        if c == 'u' {
+                            self.refresh_datapacks(true)
+                        }
+                    }
+                    AddonsSub::Plugins => match c {
+                        'i' | 'n' => self.open_plugin_search(),
+                        // Выделение записи видно только на уровне записей — не трогаем то, чего не видно.
+                        ' ' if self.addons.level != SubLevel::Entries && !self.plugins.items.is_empty() => {
+                            self.addons.level = SubLevel::Entries;
+                            self.toast_pick_entry(tr!("Пробел", "Space"));
+                        }
+                        ' ' => self.toggle_plugin(),
+                        'c' => self.check_plugin_updates(),
+                        'U' => self.ask_apply_updates(true),
+                        'u' => self.refresh_plugins(true),
+                        _ => {}
+                    },
+                }
+            }
             Tab::World => self.world_char(c),
             Tab::Status => match c {
                 'U' => self.open_core_update(),
@@ -510,7 +542,16 @@ impl App {
                 }
                 None => {}
             },
-            Tab::Plugins => self.ask_apply_updates(false),
+            Tab::Addons => {
+                if !self.sel().is_local() || self.addons.sub != AddonsSub::Plugins {
+                    return;
+                }
+                if self.addons.level != SubLevel::Entries && !self.plugins.items.is_empty() {
+                    self.addons.level = SubLevel::Entries;
+                    return self.toast_pick_entry("Enter");
+                }
+                self.ask_apply_updates(false)
+            }
             Tab::Access => self.content_char('a'),
             Tab::World => self.world_enter(),
             _ => {}
