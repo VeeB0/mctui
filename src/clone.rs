@@ -861,7 +861,8 @@ mod tests {
         cfg.restart_times = vec!["05:00".into()];
         cfg.backup_keep = 20;
         cfg.auto_restart = false;
-        cfg.backup_dir = "/Volumes/Big/mc-backups".into();
+        // Абсолютный путь вне папки сервера (на Windows «/Volumes/…» без диска — не абсолютный).
+        cfg.backup_dir = root.join("other-disk/mc-backups").display().to_string();
         let plan = plan_with(&cfg, &[], &all_free).unwrap();
         let c = copy_config(&cfg, &plan);
         assert_eq!(c.name, plan.name);
