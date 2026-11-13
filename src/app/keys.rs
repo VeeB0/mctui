@@ -90,6 +90,20 @@ impl App {
             },
             Popup::Panel(p) => self.panel_key(p, k),
             Popup::Help { scroll } => self.help_key(scroll, k),
+            Popup::NewWorld { name, seed, kind } => {
+                let n = crate::world::WORLD_TYPES.len();
+                match k.code {
+                    KeyCode::Enter => self.create_world(name, seed, kind),
+                    KeyCode::Esc => {}
+                    KeyCode::Left | KeyCode::Up => {
+                        self.popup = Some(Popup::NewWorld { name, seed, kind: (kind + n - 1) % n })
+                    }
+                    KeyCode::Right | KeyCode::Down | KeyCode::Tab | KeyCode::Char(' ') => {
+                        self.popup = Some(Popup::NewWorld { name, seed, kind: (kind + 1) % n })
+                    }
+                    _ => self.popup = Some(Popup::NewWorld { name, seed, kind }),
+                }
+            }
             Popup::Edit { title, mut input, target } => match k.code {
                 KeyCode::Enter => {
                     let v = input.value.clone();
@@ -99,6 +113,8 @@ impl App {
                         EditTarget::AccessAdd(list) => self.access_add(list, &v),
                         EditTarget::PregenRadius(dim) => self.run_pregen(dim, &v),
                         EditTarget::ResetOverworld { id, level } => self.confirm_reset_overworld(id, level, &v),
+                        EditTarget::NewWorldName => self.new_world_name(v.trim()),
+                        EditTarget::NewWorldSeed { name } => self.new_world_seed(name, v.trim()),
                         EditTarget::JvmMemory { xms_equal } => self.set_jvm_memory(v.trim(), xms_equal),
                         EditTarget::LogSearch => {
                             if !v.trim().is_empty() {

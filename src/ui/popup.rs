@@ -37,6 +37,58 @@ pub fn draw(app: &App, f: &mut Frame) {
             ]);
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(b), r);
         }
+        Popup::NewWorld { name, seed, kind } => {
+            let cur = app.world.info.as_ref().map(|i| i.level_name.as_str()).unwrap_or("world");
+            let label = |t: &'static str| Span::styled(t, Style::new().fg(theme::MUTED));
+            let short = |s: &str| {
+                if s.chars().count() > 48 {
+                    format!("{}…", s.chars().take(47).collect::<String>())
+                } else {
+                    s.to_string()
+                }
+            };
+            let seed_text =
+                if seed.is_empty() { crate::tr!("случайный", "random").to_string() } else { short(seed) };
+            let note = crate::tr!(
+                format!(
+                    "Нынешний мир «{cur}» не удаляется: он останется в списке как «другой мир», Enter вернёт его. \
+                     Датапаки старого мира в новый не переносятся. Мир создастся при запуске сервера."
+                ),
+                format!(
+                    "The current world “{cur}” is not deleted: it stays in the list as “other world”, Enter brings \
+                     it back. Data packs of the old world are not carried over. The world is created when the server starts."
+                )
+            );
+            let w: u16 = 72;
+            let inner = (w.min(f.area().width).saturating_sub(2)).max(1) as usize;
+            let r = centered(f.area(), w, (wrapped_rows(&note, inner) + 8) as u16);
+            f.render_widget(Clear, r);
+            let b = Block::bordered()
+                .title(crate::tr!(" Новый мир ", " New world "))
+                .border_style(Style::new().fg(theme::ACCENT));
+            let lines = vec![
+                Line::from(vec![label(crate::tr!("Имя:  ", "Name: ")), Span::raw(short(name))]),
+                Line::from(vec![label(crate::tr!("Сид:  ", "Seed: ")), Span::raw(seed_text)]),
+                Line::from(vec![
+                    label(crate::tr!("Тип:  ", "Type: ")),
+                    Span::styled(
+                        format!("◀ {} ▶", crate::world::world_type_title(*kind)),
+                        Style::new().fg(theme::WARN).bold(),
+                    ),
+                    label(crate::tr!("   ←→ сменить", "   ←→ change")),
+                ]),
+                Line::raw(""),
+                Line::raw(note),
+                Line::raw(""),
+                Line::from(vec![
+                    Span::styled(" Enter ", Style::new().fg(theme::BUTTON_FG).bg(theme::BUTTON_BG).bold()),
+                    Span::raw(crate::tr!(" создать    ", " create    ")),
+                    Span::styled(" Esc ", Style::new().fg(theme::TEXT).bg(theme::HIGHLIGHT_BG)),
+                    Span::raw(crate::tr!(" отмена", " cancel")),
+                ]),
+            ];
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(b), r);
+        }
         Popup::Quit { running } => {
             let online: usize = app.servers.iter().filter(|s| s.running()).map(|s| s.players.len()).sum();
             let r = centered(f.area(), 66, 9 + u16::from(online > 0));
@@ -97,6 +149,9 @@ pub fn draw(app: &App, f: &mut Frame) {
                         }
                         crate::app::EditTarget::Chat => {
                             crate::tr!("Enter — отправить · Esc — отмена", "Enter — send · Esc — cancel")
+                        }
+                        crate::app::EditTarget::NewWorldName | crate::app::EditTarget::NewWorldSeed { .. } => {
+                            crate::tr!("Enter — дальше · Esc — отмена", "Enter — next · Esc — cancel")
                         }
                         crate::app::EditTarget::ResetOverworld { .. } => {
                             crate::tr!("Enter — пересоздать · Esc — отмена", "Enter — recreate · Esc — cancel")

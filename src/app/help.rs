@@ -104,6 +104,7 @@ fn tab_keys(tab: Tab, sub: AddonsSub) -> Vec<(&'static str, &'static str)> {
                     "reset a dimension (the Overworld asks for the world name)"
                 ),
             ),
+            ("N", tr!("новый мир: имя, сид и тип", "new world: name, seed and type")),
             ("p", tr!("сгенерировать чанки (Chunky)", "pregenerate chunks (Chunky)")),
             ("P / C", tr!("пауза / продолжить генерацию", "pause / continue pregeneration")),
             ("x", tr!("отменить генерацию", "cancel pregeneration")),

@@ -74,6 +74,7 @@ impl App {
         match c {
             'u' => self.refresh_world(true),
             'R' => self.ask_reset_dimension(),
+            'N' => self.ask_new_world(),
             'p' => self.start_pregen(),
             'P' => self.pregen_command(world::PREGEN_PAUSE),
             'C' => self.pregen_command(world::PREGEN_CONTINUE),
@@ -247,9 +248,115 @@ impl App {
         );
     }
 
-    pub(super) fn set_level(&mut self, name: String) {
-        self.set_property("level-name", &name);
+    /// Создание мира, шаг 1: имя (подставлено свободное).
+    fn ask_new_world(&mut self) {
+        if self.sel().props.is_none() {
+            return self
+                .toast(tr!("server.properties не загружен", "server.properties is not loaded"), ToastKind::Error);
+        }
+        let dir = self.sel().cfg.dir().to_path_buf();
+        let base = self.world.info.as_ref().map(|i| i.level_name.clone()).unwrap_or_else(|| "world".into());
+        self.popup = Some(Popup::Edit {
+            title: tr!("Новый мир: имя папки", "New world: folder name").into(),
+            input: TextInput::with(&world::free_world_name(&dir, &base)),
+            target: EditTarget::NewWorldName,
+        });
+    }
+
+    /// Шаг 2: сид (пусто — случайный).
+    pub(super) fn new_world_name(&mut self, name: &str) {
+        if let Err(e) = world::check_new_world_name(self.sel().cfg.dir(), name) {
+            return self.toast(format!("{e:#}"), ToastKind::Error);
+        }
+        self.popup = Some(Popup::Edit {
+            title: tr!(
+                format!("Новый мир «{name}»: сид (число или слово; пусто — случайный)"),
+                format!("New world “{name}”: seed (a number or a word; empty — random)")
+            ),
+            input: TextInput::default(),
+            target: EditTarget::NewWorldSeed { name: name.to_string() },
+        });
+    }
+
+    /// Шаг 3: сводка и выбор типа мира.
+    pub(super) fn new_world_seed(&mut self, name: String, seed: &str) {
+        if let Err(e) = crate::propdocs::validate("level-seed", seed) {
+            return self.toast(format!("level-seed: {e}"), ToastKind::Error);
+        }
+        // server.properties читается как Java Properties: `\` там — экранирование, сид бы исказился.
+        if seed.contains('\\') {
+            return self
+                .toast(tr!("в сиде нельзя использовать «\\»", "the seed cannot contain “\\”"), ToastKind::Error);
+        }
+        self.popup = Some(Popup::NewWorld { name, seed: seed.to_string(), kind: 0 });
+    }
+
+    /// Записывает `level-name`, `level-seed`, `level-type`: сервер создаст мир при следующем запуске.
+    pub(super) fn create_world(&mut self, name: String, seed: String, kind: usize) {
+        // Пока висели вопросы, папка могла появиться.
+        if let Err(e) = world::check_new_world_name(self.sel().cfg.dir(), &name) {
+            return self.toast(format!("{e:#}"), ToastKind::Error);
+        }
+        let old = self.current_level();
+        let s = self.sel_mut();
+        let level_type = world::level_type_value(kind, s.version.as_deref());
+        let Some(props) = &mut s.props else {
+            return self
+                .toast(tr!("server.properties не загружен", "server.properties is not loaded"), ToastKind::Error);
+        };
+        props.set("level-name", &name);
+        props.set("level-seed", &seed);
+        props.set("level-type", level_type);
+        let (id, running, online) = (s.id, s.running(), s.players.len());
+        let saved = self.save_props(tr!(
+            format!("новый мир «{name}» — создастся при запуске сервера"),
+            format!("new world “{name}” — it is created when the server starts")
+        ));
+        if !saved {
+            return; // ошибка записи уже показана, перезапуск ни к чему
+        }
+        self.retarget_backups(&old, &name);
         self.refresh_world(true);
+        if running {
+            let who = if online > 0 {
+                tr!(format!(" Игроков онлайн: {online}."), format!(" Players online: {online}."))
+            } else {
+                String::new()
+            };
+            self.popup = Some(Popup::Confirm {
+                title: tr!("Перезапустить сервер", "Restart the server").into(),
+                text: tr!(
+                    format!("Мир «{name}» создастся при перезапуске. Перезапустить сервер сейчас?{who}"),
+                    format!("World “{name}” is created on restart. Restart the server now?{who}")
+                ),
+                action: Action::Stop { id, restart: true },
+            });
+        }
+    }
+
+    pub(super) fn set_level(&mut self, name: String) {
+        let old = self.current_level();
+        self.set_property("level-name", &name);
+        if self.sel().prop("level-name") == Some(name.as_str()) {
+            self.retarget_backups(&old, &name);
+        }
+        self.refresh_world(true);
+    }
+
+    /// Основной мир выбранного сервера по server.properties.
+    fn current_level(&self) -> String {
+        self.sel()
+            .prop("level-name")
+            .filter(|n| !n.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| world::current_level_name(self.sel().cfg.dir()))
+    }
+
+    /// Бэкапы следуют за основным миром: пути `old*` меняются на `new*`.
+    fn retarget_backups(&mut self, old: &str, new: &str) {
+        if let Some(paths) = world::retarget_backup_paths(&self.sel().cfg.backup_paths, old, new) {
+            self.update_cfg(|c| c.backup_paths = paths);
+        }
     }
 
     fn pregen_command(&mut self, cmd: &str) {
