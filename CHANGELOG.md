@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-13
+
 ### Изменено
 - Первая подвкладка «Дополнений» называется по ядру сервера: «Плагины» (Paper, Purpur, Spigot, Folia) или
   «Моды» (Fabric, Quilt, Forge, NeoForge); «Плагины и моды» — если в списке есть и то и другое. На ванильном
@@ -233,7 +235,8 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/VeeB0/pechka/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/VeeB0/pechka/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/VeeB0/pechka/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/VeeB0/pechka/compare/v0.5.0...v0.6.0
