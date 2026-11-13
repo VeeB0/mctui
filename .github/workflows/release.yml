@@ -67,3 +67,65 @@ jobs:
             install.sh
             install.ps1
           generate_release_notes: true
+
+  # Обновляет формулу в tap VeeB0/homebrew-mctui (brew install VeeB0/mctui/mctui).
+  # Нужен секрет HOMEBREW_TAP_DEPLOY_KEY — приватный SSH-ключ, добавленный в tap как
+  # deploy key с правом записи. Без секрета задача пропускается с предупреждением.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+      TAP_REPO: VeeB0/homebrew-mctui
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check prerequisites
+        id: check
+        shell: bash
+        run: |
+          if [ -z "$TAP_KEY" ]; then
+            echo "::warning::HOMEBREW_TAP_DEPLOY_KEY is not set, skipping Homebrew tap update"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            echo "::notice::Pre-release tag $GITHUB_REF_NAME, skipping Homebrew tap update"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+      - name: Download checksums
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D sha \
+            -p mctui-aarch64-apple-darwin.sha256 \
+            -p mctui-x86_64-apple-darwin.sha256 \
+            -p mctui-aarch64-unknown-linux-musl.sha256 \
+            -p mctui-x86_64-unknown-linux-musl.sha256
+          cat sha/*.sha256
+      - name: Update formula in tap
+        if: steps.check.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/tap_key"
+          known="$RUNNER_TEMP/known_hosts"
+          ( umask 077; printf '%s\n' "$TAP_KEY" > "$key" )
+          trap 'rm -f "$key"' EXIT
+          # Опубликованный SSH host key github.com (ed25519).
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$known"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known -o StrictHostKeyChecking=yes"
+
+          version="${GITHUB_REF_NAME#v}"
+          git clone --depth 1 "git@github.com:${TAP_REPO}.git" tap
+          mkdir -p tap/Formula
+          packaging/homebrew/render.sh "$version" sha > tap/Formula/mctui.rb
+          cd tap
+          git add Formula/mctui.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for $version"
+            exit 0
+          fi
+          git -c user.name=VeeB0 -c user.email=45315332+VeeB0@users.noreply.github.com \
+            commit -m "mctui $version"
+          git push origin HEAD
