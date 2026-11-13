@@ -116,6 +116,8 @@ pub enum Action {
     AccessRemove { list: List, name: String },
     ApplyUpdates(Vec<PathBuf>),
     ReloadDatapacks(usize),
+    // `datapack enable "file/<имя>"` на сервере `id`: пак выключен в игре командой `/datapack`.
+    EnableDatapackInGame(usize, Box<DatapackInfo>),
     DatapackToggle(PathBuf),
     ApplyDatapackUpdates(Vec<PathBuf>),
     InstallPlugin(Box<crate::plugin_search::InstallPlan>),
@@ -766,6 +768,7 @@ impl App {
             Action::AccessRemove { list, name } => self.access_remove(list, &name),
             Action::ApplyUpdates(paths) => self.apply_updates(paths),
             Action::ReloadDatapacks(id) => self.reload_datapacks(id),
+            Action::EnableDatapackInGame(id, d) => self.enable_datapack_in_game(id, &d),
             Action::DatapackToggle(path) => self.toggle_datapack_at(path),
             Action::ApplyDatapackUpdates(paths) => self.apply_datapack_updates(paths),
             Action::InstallPlugin(plan) => self.install_plugin(*plan),
@@ -890,6 +893,16 @@ impl App {
             Tab::World => self.refresh_world(force),
             _ => {}
         }
+    }
+
+    /// Единственное место смены фокуса. Уходя с содержимого, уровни подвкладок сбрасываются: вернувшись,
+    /// ←→ снова листают вкладки окна (правило стрелок), а не подвкладки.
+    fn set_focus(&mut self, f: Focus) {
+        if f != Focus::Content {
+            self.access.level = SubLevel::Tabs;
+            self.addons.level = SubLevel::Tabs;
+        }
+        self.focus = f;
     }
 
     fn set_tab(&mut self, t: Tab) {

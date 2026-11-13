@@ -133,10 +133,10 @@ impl App {
                 KeyCode::Enter => self.submit_input(),
                 KeyCode::Esc => {
                     self.completion_hint = None;
-                    self.focus = Focus::Sidebar
+                    self.set_focus(Focus::Sidebar)
                 }
                 KeyCode::Tab => self.complete_input(),
-                KeyCode::BackTab => self.focus = Focus::Content,
+                KeyCode::BackTab => self.set_focus(Focus::Content),
                 KeyCode::Up => self.history_step(-1),
                 KeyCode::Down => self.history_step(1),
                 _ => {
@@ -149,19 +149,15 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Sidebar => Focus::Content,
-                    _ => Focus::Input,
-                }
-            }
-            KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Content => Focus::Sidebar,
-                    _ => Focus::Input,
-                }
-            }
-            KeyCode::Esc => self.focus = Focus::Sidebar,
+            KeyCode::Tab => self.set_focus(match self.focus {
+                Focus::Sidebar => Focus::Content,
+                _ => Focus::Input,
+            }),
+            KeyCode::BackTab => self.set_focus(match self.focus {
+                Focus::Content => Focus::Sidebar,
+                _ => Focus::Input,
+            }),
+            KeyCode::Esc => self.set_focus(Focus::Sidebar),
             KeyCode::Char(c) => {
                 let c = latin(c);
                 match c {
@@ -169,15 +165,15 @@ impl App {
                     // `,` — та же клавиша, что `?`, в русской раскладке.
                     '?' | ',' => return self.open_help(),
                     '1'..='7' => {
-                        self.focus = Focus::Content;
+                        self.set_focus(Focus::Content);
                         return self.set_tab(TABS[c as usize - '1' as usize]);
                     }
                     ':' | '/' => {
-                        self.focus = Focus::Input;
+                        self.set_focus(Focus::Input);
                         return;
                     }
                     'i' if self.focus == Focus::Sidebar => {
-                        self.focus = Focus::Input;
+                        self.set_focus(Focus::Input);
                         return;
                     }
                     'q' => return self.request_quit(),
@@ -190,7 +186,7 @@ impl App {
                     self.content_char(c);
                 }
             }
-            KeyCode::Enter if self.focus == Focus::Sidebar => self.focus = Focus::Input,
+            KeyCode::Enter if self.focus == Focus::Sidebar => self.set_focus(Focus::Input),
             KeyCode::Delete if self.focus == Focus::Sidebar => self.ask_remove_server(),
             KeyCode::Delete if self.focus == Focus::Content => self.content_char('d'),
             KeyCode::Left if self.focus == Focus::Content => self.cycle_tab(-1),
@@ -198,7 +194,7 @@ impl App {
                 if self.focus == Focus::Content {
                     self.cycle_tab(1)
                 } else {
-                    self.focus = Focus::Content
+                    self.set_focus(Focus::Content)
                 }
             }
             KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {

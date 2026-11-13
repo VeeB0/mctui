@@ -1064,8 +1064,8 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
                 "←→ tabs · ↓ to the lists · i find & install · c updates · U update all · u rescan"
             ),
             SubLevel::Lists => tr!(
-                "←→ плагины/датапаки · ↓ к записям · ↑ к вкладкам · i найти и установить · c обновления · u перечитать",
-                "←→ plugins/datapacks · ↓ to entries · ↑ to tabs · i find & install · c updates · u rescan"
+                "←→ плагины/датапаки · ↓ к записям · ↑ к вкладкам · i найти и установить · c обновления · U обновить все · u перечитать",
+                "←→ plugins/datapacks · ↓ to entries · ↑ to tabs · i find & install · c updates · U update all · u rescan"
             ),
             SubLevel::Entries => tr!(
                 "↑↓ выбор · ←→ плагины/датапаки · i найти и установить · Пробел вкл/выкл · c обновления · Enter/U обновить · u перечитать",

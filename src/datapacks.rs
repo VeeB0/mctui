@@ -12,11 +12,10 @@ pub const DATAPACK_LOADERS: &[&str] = &["datapack"];
 
 const MCMETA_LIMIT: u64 = 1 << 20;
 const WORLDGEN: &[&str] = &["worldgen", "dimension", "dimension_type"];
-/// Папки, которые `/reload` подхватывает без перезапуска сервера.
+/// Папки, которые `/reload` подхватывает без перезапуска сервера. `tags/` решает реестр тегов, см. [`TAG_RELOADABLE`].
 const RELOADABLE: &[&str] = &[
     "function",
     "functions",
-    "tags",
     "recipe",
     "recipes",
     "loot_table",
@@ -29,6 +28,22 @@ const RELOADABLE: &[&str] = &[
     "item_modifiers",
     "structure",
     "structures",
+];
+/// Реестры в `data/<ns>/tags/<реестр>/`, теги которых `/reload` применяет на ходу. Остальные теги
+/// (`worldgen/…`, `enchantment`, `damage_type`, …) читаются только при запуске мира.
+const TAG_RELOADABLE: &[&str] = &[
+    "block",
+    "blocks",
+    "item",
+    "items",
+    "entity_type",
+    "entity_types",
+    "fluid",
+    "fluids",
+    "game_event",
+    "game_events",
+    "function",
+    "functions",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,13 +124,24 @@ pub fn set_enabled(d: &DatapackInfo, enabled: bool, level_dir: &Path) -> Result<
 
 /// Проверка обновлений zip-датапаков на Modrinth (загрузчик `datapack`).
 pub fn check_updates(items: &[DatapackInfo], game_version: Option<&str>) -> Result<crate::plugins::HashCheck> {
+    check_updates_with(&crate::plugins::post_json, items, game_version)
+}
+
+fn check_updates_with(
+    post: crate::plugins::PostFn,
+    items: &[DatapackInfo],
+    game_version: Option<&str>,
+) -> Result<crate::plugins::HashCheck> {
     let loaders: Vec<String> = DATAPACK_LOADERS.iter().map(|s| s.to_string()).collect();
     let files: Vec<(PathBuf, String, Vec<String>)> = items
         .iter()
         .filter(|d| d.is_zip && !d.sha1.is_empty())
         .map(|d| (d.path.clone(), d.sha1.clone(), loaders.clone()))
         .collect();
-    crate::plugins::check_hashes_with(&crate::plugins::post_json, &files, game_version)
+    let mut h = crate::plugins::check_hashes_with(post, &files, game_version)?;
+    // Новая версия с jar (или чем-то ещё) вместо zip — не датапак; под именем `X.zip` её не ставим.
+    h.updates.retain(|_, u| u.file_name.to_ascii_lowercase().ends_with(".zip"));
+    Ok(h)
 }
 
 /// Заменяет zip-датапак новой версией под тем же именем и в той же папке; старый уходит в
@@ -155,8 +181,11 @@ fn apply_update_with(
                 format!("checksum mismatch (expected {expected}, got {actual})")
             ));
         }
-        zip::ZipArchive::new(std::fs::File::open(&tmp)?)
+        let zip = zip::ZipArchive::new(std::fs::File::open(&tmp)?)
             .context(crate::tr!("скачанный файл — не zip", "downloaded file is not a zip"))?;
+        if !has_pack_mcmeta(&zip) {
+            bail!(not_a_datapack());
+        }
 
         let old_dir = tmp_dir.join(crate::plugins::OLD_DIR);
         std::fs::create_dir_all(&old_dir).map_err(|_| anyhow::anyhow!(fail()))?;
@@ -177,6 +206,15 @@ fn apply_update_with(
     res
 }
 
+/// В корне архива есть `pack.mcmeta` — без него игра пак не загрузит.
+pub(crate) fn has_pack_mcmeta<R: Read + std::io::Seek>(zip: &zip::ZipArchive<R>) -> bool {
+    zip.index_for_name("pack.mcmeta").is_some()
+}
+
+pub(crate) fn not_a_datapack() -> String {
+    crate::tr!("не датапак: нет pack.mcmeta", "not a datapack: no pack.mcmeta").into()
+}
+
 /// `Data.DataPacks.Disabled` из `level.dat` (пусто, если файла или списка нет).
 fn game_disabled(level_dir: &Path) -> Vec<String> {
     use crate::world::nbt::{Tag, read_file};
@@ -194,7 +232,8 @@ fn inspect(path: &Path, enabled: bool, game_off: &[String]) -> Option<DatapackIn
         return None;
     }
     let is_zip = if path.is_file() {
-        if !file_name.to_lowercase().ends_with(".zip") {
+        // Как в игре: только `.zip` в нижнем регистре (`X.ZIP` игра пропускает — и мы не показываем).
+        if !file_name.ends_with(".zip") {
             return None;
         }
         true
@@ -269,14 +308,46 @@ fn content_flags<'a>(paths: impl Iterator<Item = &'a str>) -> (bool, bool) {
         let parts: Vec<&str> = p.split('/').filter(|c| !c.is_empty()).collect();
         let Some(i) = (0..2).find(|&i| parts.get(i) == Some(&"data")) else { continue };
         let Some(dir) = parts.get(i + 2) else { continue };
+        if *dir == "tags" {
+            // `data/<ns>/tags/<реестр>/…`: решает реестр. Теги генерации (`tags/worldgen/…`) сами генерацию
+            // не меняют — только требуют перезапуска. Файл прямо в `tags/` — не содержимое.
+            if let Some(registry) = parts.get(i + 3)
+                && parts.len() > i + 4
+            {
+                restart |= !TAG_RELOADABLE.contains(registry);
+            }
+            continue;
+        }
         worldgen |= WORLDGEN.contains(dir);
         restart |= !RELOADABLE.contains(dir);
     }
     (worldgen, restart)
 }
 
-/// Плоский текст описания: строка, `{text, extra[]}` или массив таких.
+/// Описание одной строкой: без кодов форматирования `§x`, переводы строк — пробелом. Пустое → `None`.
 fn description_text(v: &serde_json::Value) -> Option<String> {
+    let raw = flat_text(v)?;
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // Код форматирования: `§` и следующий за ним символ.
+            '§' => {
+                chars.next();
+            }
+            '\n' | '\r' => {
+                while chars.next_if(|c| matches!(c, '\n' | '\r')).is_some() {}
+                out.push(' ');
+            }
+            c => out.push(c),
+        }
+    }
+    let out = out.trim();
+    (!out.is_empty()).then(|| out.to_string())
+}
+
+/// Плоский текст описания: строка, `{text, extra[]}` или массив таких.
+fn flat_text(v: &serde_json::Value) -> Option<String> {
     use serde_json::Value;
     match v {
         Value::String(s) => Some(s.clone()),
@@ -291,7 +362,7 @@ fn description_text(v: &serde_json::Value) -> Option<String> {
 }
 
 fn join_parts<'a>(parts: impl Iterator<Item = &'a serde_json::Value>) -> Option<String> {
-    let texts: Vec<String> = parts.filter_map(description_text).collect();
+    let texts: Vec<String> = parts.filter_map(flat_text).collect();
     if texts.is_empty() { None } else { Some(texts.concat()) }
 }
 
@@ -303,10 +374,14 @@ pub(crate) mod tests {
     struct TempDir(PathBuf);
     impl TempDir {
         fn new(tag: &str) -> Self {
+            // Часы macOS идут с шагом в микросекунду: параллельные тесты с одним `tag` (zip_bytes) получали
+            // одну папку и удаляли её друг у друга. Счётчик делает имя уникальным.
+            static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let d = std::env::temp_dir().join(format!(
-                "pechka-datapacks-{tag}-{}-{}",
+                "pechka-datapacks-{tag}-{}-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&d).unwrap();
             TempDir(d)
@@ -377,6 +452,8 @@ pub(crate) mod tests {
         let t = TempDir::new("scan");
         let level = t.0.join("world");
         sample(&level);
+        // Игра берёт только `.zip` в нижнем регистре — `D.ZIP` она пропускает, и мы не показываем.
+        make_zip(&level.join("datapacks/D.ZIP"), &[("pack.mcmeta", MCMETA)]);
         let v = scan(&level);
         assert_eq!(v.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["a", "B", "c"]);
         assert_eq!(v.iter().map(|d| d.enabled).collect::<Vec<_>>(), [true, true, false]);
@@ -400,6 +477,28 @@ pub(crate) mod tests {
         assert_eq!(f(&["data/ns/enchantment/x.json"]), (false, true));
         assert_eq!(f(&["ov_1/data/ns/dimension_type/x.json"]), (true, true));
         assert_eq!(f(&["assets/x.png", "pack.mcmeta"]), (false, false));
+        // Теги: `/reload` применяет только теги блоков, предметов, сущностей, жидкостей, игровых событий и функций.
+        for reg in [
+            "block",
+            "blocks",
+            "item",
+            "items",
+            "entity_type",
+            "entity_types",
+            "fluid",
+            "fluids",
+            "game_event",
+            "game_events",
+            "function",
+            "functions",
+        ] {
+            assert_eq!(f(&[format!("data/ns/tags/{reg}/x.json").as_str()]), (false, false), "{reg}");
+        }
+        assert_eq!(f(&["data/ns/tags/worldgen/biome/x.json"]), (false, true));
+        assert_eq!(f(&["ov_1/data/ns/tags/worldgen/structure/x.json"]), (false, true));
+        assert_eq!(f(&["data/ns/tags/enchantment/x.json"]), (false, true));
+        assert_eq!(f(&["data/ns/tags/damage_type/x.json"]), (false, true));
+        assert_eq!(f(&["data/ns/tags/", "data/ns/tags/block/"]), (false, false), "записи-папки zip");
     }
 
     #[test]
@@ -408,6 +507,17 @@ pub(crate) mod tests {
         assert_eq!(description_text(&j(r#"{"text":"A","extra":[{"text":"B"},"C"]}"#)).as_deref(), Some("ABC"));
         assert_eq!(description_text(&j(r#"[{"text":"X"},"Y"]"#)).as_deref(), Some("XY"));
         assert_eq!(description_text(&j("42")), None);
+    }
+
+    #[test]
+    fn description_strips_formatting_codes_and_newlines() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        assert_eq!(
+            description_text(&j(r#""§aGreen§r line\nnext\r\n\r\nend  ""#)).as_deref(),
+            Some("Green line next end")
+        );
+        assert_eq!(description_text(&j(r#"{"text":"§6Gold\n","extra":["§lX"]}"#)).as_deref(), Some("Gold X"));
+        assert_eq!(description_text(&j(r#""  §""#)).as_deref(), None);
     }
 
     #[test]
@@ -544,6 +654,60 @@ pub(crate) mod tests {
             .filter(|n| n.ends_with(".part"))
             .collect();
         assert!(left.is_empty(), "{left:?}");
+    }
+
+    #[test]
+    fn apply_update_rejects_zip_without_pack_mcmeta() {
+        let t = TempDir::new("nomcmeta");
+        let level = t.0.join("world");
+        make_zip(&level.join("datapacks/a.zip"), &[("pack.mcmeta", "{}")]);
+        let old = std::fs::read(level.join("datapacks/a.zip")).unwrap();
+        // zip, но не датапак: pack.mcmeta не в корне (например, плагин или обёртка-папка).
+        let src = t.0.join("src.zip");
+        make_zip(&src, &[("inner/pack.mcmeta", "{}"), ("plugin.yml", "name: x")]);
+        let d = info_for(&level, "a.zip");
+        let e = apply_update_with(&d, &upd(None), &level, |_, dest| Ok(std::fs::copy(&src, dest).map(|_| ())?))
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("pack.mcmeta"), "{e:#}");
+        assert_eq!(std::fs::read(level.join("datapacks/a.zip")).unwrap(), old);
+        assert!(!level.join("datapacks.disabled/.pechka-old").exists());
+    }
+
+    fn mr_version(id: &str, filename: &str, sha1: &str, date: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","project_id":"P","version_number":"{id}","date_published":"{date}",
+                "files":[{{"url":"https://x/{filename}","filename":"{filename}","primary":true,"hashes":{{"sha1":"{sha1}"}}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn check_updates_skips_non_zip_files() {
+        let t = TempDir::new("chkzip");
+        let level = t.0.join("world");
+        make_zip(&level.join("datapacks/a.zip"), &[("pack.mcmeta", MCMETA)]);
+        make_zip(&level.join("datapacks/b.zip"), &[("pack.mcmeta", r#"{"pack":{"description":"b"}}"#)]);
+        let items = scan(&level);
+        let (ha, hb) = (items[0].sha1.clone(), items[1].sha1.clone());
+        let post = |url: &str, _: &serde_json::Value| -> Result<String> {
+            if url.ends_with("/version_files/update") {
+                // a — новая версия в zip; b — «новая версия» с jar-файлом (это не датапак).
+                Ok(format!(
+                    r#"{{"{ha}":{},"{hb}":{}}}"#,
+                    mr_version("a2", "a-2.zip", "n1", "2026-02-01T00:00:00Z"),
+                    mr_version("b2", "b-2.jar", "n2", "2026-02-01T00:00:00Z")
+                ))
+            } else {
+                Ok(format!(
+                    r#"{{"{ha}":{},"{hb}":{}}}"#,
+                    mr_version("a1", "a.zip", &ha, "2026-01-01T00:00:00Z"),
+                    mr_version("b1", "b.zip", &hb, "2026-01-01T00:00:00Z")
+                ))
+            }
+        };
+        let r = check_updates_with(&post, &items, None).unwrap();
+        assert_eq!(r.updates.get(&items[0].path).map(|u| u.version.as_str()), Some("a2"));
+        assert!(!r.updates.contains_key(&items[1].path), "{:?}", r.updates.get(&items[1].path));
+        assert_eq!(r.current.get(&items[1].path).map(String::as_str), Some("b1"), "версию b всё равно знаем");
     }
 
     #[test]

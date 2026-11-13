@@ -5,6 +5,11 @@ use super::*;
 /// Перезагрузка только датапаков. Bukkit-овский `reload` перезагружает плагины и опасен — его не шлём никогда.
 const RELOAD_COMMAND: &str = "minecraft:reload";
 
+/// Последняя фраза вопросов о перезагрузке датапаков (`minecraft:reload` и `datapack enable`).
+fn reload_lag() -> &'static str {
+    tr!("Перезагрузка даёт короткую заминку.", "A reload causes a brief lag.")
+}
+
 impl App {
     /// (id сервера, папка мира) выбранного сервера.
     fn datapacks_key(&self) -> (usize, PathBuf) {
@@ -39,8 +44,12 @@ impl App {
 
     /// Пробел: включить/выключить выбранный датапак переносом между `datapacks/` и `datapacks.disabled/`.
     /// Пак генерации мира выключается только после подтверждения; пак, выключенный в игре командой
-    /// `/datapack`, включается той же командой на запущенном сервере.
+    /// `/datapack`, включается той же командой на запущенном сервере (при игроках онлайн — после вопроса).
     pub(super) fn toggle_datapack(&mut self) {
+        // Пока идёт установка или обновление, файлы датапаков не трогаем.
+        if self.datapacks_busy() {
+            return;
+        }
         let Some(d) = self.datapacks.items.get(self.datapacks.sel).cloned() else { return };
         if d.disabled_in_game {
             let s = self.sel();
@@ -54,12 +63,24 @@ impl App {
                 );
             }
             let id = s.id;
-            let quoted = d.id().replace('\\', "\\\\").replace('"', "\\\"");
-            self.send_announced(id, format!("datapack enable \"{quoted}\""));
-            return self.toast(
-                tr!(format!("{}: включён в игре", d.name), format!("{}: enabled in game", d.name)),
-                ToastKind::Ok,
-            );
+            // `datapack enable` перезагружает датапаки целиком, как `minecraft:reload`, — те же правила.
+            // Сюда попадаем только с клавиши, когда никакого окна не открыто: вопрос ничего не перекрывает
+            // (а если бы окно было — не подменяем его и без ответа ничего не отправляем).
+            if let Some(note) = players_note(&s.players) {
+                if self.popup.is_none() {
+                    let lag = reload_lag();
+                    self.popup = Some(Popup::Confirm {
+                        title: tr!("Включить датапак", "Enable datapack").into(),
+                        text: tr!(
+                            format!("{}: datapack enable перезагрузит датапаки. {note} {lag}", d.name),
+                            format!("{}: datapack enable reloads datapacks. {note} {lag}", d.name)
+                        ),
+                        action: Action::EnableDatapackInGame(id, Box::new(d)),
+                    });
+                }
+                return;
+            }
+            return self.enable_datapack_in_game(id, &d);
         }
         if d.enabled && d.worldgen {
             self.popup = Some(Popup::Confirm {
@@ -75,15 +96,33 @@ impl App {
         self.move_datapack(&d);
     }
 
-    /// Переключение после подтверждения: пак ищется по пути в только что перечитанном списке.
+    /// `datapack enable "file/<имя>"` для пака, выключенного в игре. Отметка «выкл в игре» снимается только
+    /// в памяти (`level.dat` не пишем): новый скан перечитает `level.dat`, а игра сохранит его не сразу.
+    pub(super) fn enable_datapack_in_game(&mut self, id: usize, d: &DatapackInfo) {
+        let quoted = d.id().replace('\\', "\\\\").replace('"', "\\\"");
+        self.send_announced(id, format!("datapack enable \"{quoted}\""));
+        if let Some(item) = self.datapacks.items.iter_mut().find(|x| x.path == d.path) {
+            item.disabled_in_game = false;
+        }
+        let mut what = tr!(format!("{}: включён в игре", d.name), format!("{}: enabled in game", d.name));
+        if d.needs_restart {
+            what += tr!(" — вступит в силу после перезапуска", " — takes effect after a restart");
+        }
+        self.toast(what, ToastKind::Ok);
+    }
+
+    /// Переключение после подтверждения: пак ищется по пути в текущем списке (тот, о котором спрашивали);
+    /// после переноса список перечитывается один раз.
     pub(super) fn toggle_datapack_at(&mut self, path: PathBuf) {
-        self.refresh_datapacks(true);
         match self.datapacks.items.iter().find(|d| d.path == path).cloned() {
             Some(d) => self.move_datapack(&d),
-            None => self.toast(
-                tr!("датапак не найден — список перечитан", "datapack not found — the list was rescanned"),
-                ToastKind::Error,
-            ),
+            None => {
+                self.refresh_datapacks(true);
+                self.toast(
+                    tr!("датапак не найден — список перечитан", "datapack not found — the list was rescanned"),
+                    ToastKind::Error,
+                )
+            }
         }
     }
 
@@ -127,10 +166,15 @@ impl App {
             }
             self.popup = Some(Popup::Confirm {
                 title: tr!("Перезагрузить датапаки", "Reload datapacks").into(),
-                text: format!("{note} {}", tr!("Перезагрузка даёт короткую заминку.", "A reload causes a brief lag.")),
+                text: format!("{note} {}", reload_lag()),
                 action: Action::ReloadDatapacks(id),
             });
-            return self.toast(what, ToastKind::Ok);
+            // Видно и после отказа (Esc): изменение ещё не применено.
+            let tail = tr!(
+                " — применится после minecraft:reload или перезапуска",
+                " — applies after minecraft:reload or a restart"
+            );
+            return self.toast(format!("{what}{tail}"), ToastKind::Ok);
         }
         self.send_announced(id, RELOAD_COMMAND.into());
         let tail = tr!(" · датапаки перезагружаются", " · datapacks are reloading");
@@ -156,10 +200,19 @@ impl App {
     }
 
     /// Итог фоновой установки/обновления датапаков мира `key`: перечитать список и применить изменения
-    /// (`changed` — новые или заменённые файлы). Если выбран уже другой сервер — только сообщение.
+    /// (`changed` — новые или заменённые файлы). Если выбран уже другой сервер — только сообщение с его именем:
+    /// датапаки там не перезагружаются.
     pub(super) fn finish_datapack_job(&mut self, key: (usize, PathBuf), changed: &[PathBuf], what: String) {
         if !self.has_server() || self.datapacks_key() != key {
-            return self.toast(what, ToastKind::Ok);
+            let msg = match self.servers.iter().find(|s| s.id == key.0) {
+                Some(s) if s.running() => tr!(
+                    format!("{what} на «{}» — не перезагружено", s.cfg.name),
+                    format!("{what} on \"{}\" — not reloaded", s.cfg.name)
+                ),
+                Some(s) => tr!(format!("{what} на «{}»", s.cfg.name), format!("{what} on \"{}\"", s.cfg.name)),
+                None => what,
+            };
+            return self.toast(msg, ToastKind::Ok);
         }
         self.refresh_datapacks(true);
         let restart = self.datapacks.items.iter().any(|d| changed.contains(&d.path) && d.needs_restart);
@@ -167,8 +220,11 @@ impl App {
     }
 
     pub(super) fn check_datapack_updates(&mut self) {
-        if self.datapacks.checking || self.datapacks.items.is_empty() {
+        if self.datapacks.checking {
             return;
+        }
+        if self.datapacks.items.is_empty() {
+            return self.toast(tr!("датапаков нет", "no datapacks"), ToastKind::Info);
         }
         let items = self.datapacks.items.clone();
         let game = self.sel().version.clone();
@@ -182,33 +238,39 @@ impl App {
                     return;
                 }
                 match res {
-                    Ok(h) => {
-                        app.datapacks.checked = true;
-                        let n = h.updates.len();
-                        app.datapacks.updates = h.updates;
-                        app.datapacks.versions = h.current;
-                        if n == 0 {
-                            app.toast(
-                                tr!(
-                                    "все датапаки актуальны (по данным Modrinth)",
-                                    "all datapacks are up to date (per Modrinth)"
-                                ),
-                                ToastKind::Ok,
-                            );
-                        } else {
-                            app.toast(
-                                tr!(
-                                    format!("доступно обновлений: {n} — Enter или U, чтобы установить"),
-                                    format!("{n} update(s) available — Enter or U to install")
-                                ),
-                                ToastKind::Info,
-                            );
-                        }
-                    }
+                    Ok(h) => app.show_datapack_check(h),
                     Err(e) => app.toast(e, ToastKind::Error),
                 }
             },
         );
+    }
+
+    /// Итог проверки обновлений датапаков текущего мира.
+    pub(super) fn show_datapack_check(&mut self, h: crate::plugins::HashCheck) {
+        self.datapacks.checked = true;
+        let n = h.updates.len();
+        self.datapacks.updates = h.updates;
+        self.datapacks.versions = h.current;
+        if n == 0 && self.datapacks.versions.is_empty() {
+            // Ни один файл Modrinth не узнал — «всё актуально» было бы неправдой.
+            self.toast(
+                tr!("Modrinth не узнал ни одного датапака", "Modrinth recognised none of the datapacks"),
+                ToastKind::Info,
+            );
+        } else if n == 0 {
+            self.toast(
+                tr!("все датапаки актуальны (по данным Modrinth)", "all datapacks are up to date (per Modrinth)"),
+                ToastKind::Ok,
+            );
+        } else {
+            self.toast(
+                tr!(
+                    format!("доступно обновлений: {n} — Enter или U, чтобы установить"),
+                    format!("{n} update(s) available — Enter or U to install")
+                ),
+                ToastKind::Info,
+            );
+        }
     }
 
     pub(super) fn ask_apply_datapack_updates(&mut self, all: bool) {
@@ -352,5 +414,49 @@ mod tests {
             assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::ReloadDatapacks(0), .. })));
         });
         assert!(rx.try_recv().is_err(), "без ответа пользователя ничего не отправляется");
+    }
+
+    fn running(name: &str, id: usize, dir: &std::path::Path) -> crate::proto::ServerView {
+        let cfg = crate::config::ServerConfig::new_local(name, dir.to_path_buf(), vec![], vec![]);
+        let mut v = crate::server::ServerState::new(cfg, id).view();
+        v.status = Status::Running;
+        v.pid = Some(1);
+        v
+    }
+
+    #[tokio::test]
+    async fn finish_datapack_job_on_another_server_names_it() {
+        let dir = PathBuf::from("/nonexistent/pechka-finish-other");
+        let (client, mut rx) = Client::recording();
+        with_lang(Lang::En, || {
+            let servers = vec![running("S", 0, &dir.join("s")), running("Other", 1, &dir.join("o"))];
+            let mut a = App::for_test(dir.join("servers.toml"), client, servers);
+            assert_eq!(a.sel().id, 0);
+            let key = (1, datapacks::level_dir(&dir.join("o")));
+            a.finish_datapack_job(key, &[], "installed: 1".into());
+            assert_eq!(a.toast.as_ref().map(|t| t.0.as_str()), Some(r#"installed: 1 on "Other" — not reloaded"#));
+            assert!(a.popup.is_none());
+            // Остановленному серверу перезагружать нечего: паки загрузятся при запуске.
+            a.servers[1].view.pid = None;
+            a.servers[1].view.status = Status::Offline;
+            a.finish_datapack_job((1, datapacks::level_dir(&dir.join("o"))), &[], "installed: 1".into());
+            assert_eq!(a.toast.as_ref().map(|t| t.0.as_str()), Some(r#"installed: 1 on "Other""#));
+        });
+        assert!(rx.try_recv().is_err(), "на чужом сервере ничего не перезагружается");
+    }
+
+    #[tokio::test]
+    async fn datapack_check_tells_when_modrinth_knows_none() {
+        let dir = PathBuf::from("/nonexistent/pechka-check-none");
+        with_lang(Lang::En, || {
+            let mut a = App::for_test(dir.join("servers.toml"), Client::detached(), vec![running("S", 0, &dir)]);
+            let toast = |a: &App| a.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+            a.show_datapack_check(crate::plugins::HashCheck::default());
+            assert_eq!(toast(&a), "Modrinth recognised none of the datapacks");
+            let mut h = crate::plugins::HashCheck::default();
+            h.current.insert(dir.join("a.zip"), "1.0".into());
+            a.show_datapack_check(h);
+            assert_eq!(toast(&a), "all datapacks are up to date (per Modrinth)");
+        });
     }
 }

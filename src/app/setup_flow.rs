@@ -39,7 +39,7 @@ impl App {
     pub(super) fn close_setup(&mut self) {
         self.setup = None;
         self.screen = Screen::Main;
-        self.focus = Focus::Sidebar;
+        self.set_focus(Focus::Sidebar);
     }
 
     /// Загрузить список версий ядра для формы «Создать новый», если ещё не загружен.

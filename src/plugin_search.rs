@@ -1089,7 +1089,7 @@ fn verify(f: &PlannedFile, path: &Path, kind: PluginKind) -> Result<()> {
             format!("{}: checksum mismatch ({algo})", f.file_name)
         ));
     }
-    zip::ZipArchive::new(std::fs::File::open(path)?).with_context(|| {
+    let zip = zip::ZipArchive::new(std::fs::File::open(path)?).with_context(|| {
         if kind == PluginKind::Datapack {
             tr!(
                 format!("{}: скачанный файл — не zip-архив", f.file_name),
@@ -1102,6 +1102,9 @@ fn verify(f: &PlannedFile, path: &Path, kind: PluginKind) -> Result<()> {
             )
         }
     })?;
+    if kind == PluginKind::Datapack && !crate::datapacks::has_pack_mcmeta(&zip) {
+        bail!("{}: {}", f.file_name, crate::datapacks::not_a_datapack());
+    }
     Ok(())
 }
 
@@ -1759,6 +1762,23 @@ mod tests {
         }
         let names: Vec<_> = std::fs::read_dir(world.join("datapacks")).unwrap().flatten().collect();
         assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn install_datapack_rejects_zip_without_pack_mcmeta() {
+        let t = TempDir::new("dp-nomcmeta");
+        let src = t.0.join("src").join("x-1.0.zip");
+        // Настоящий zip (и хэш совпадёт), но pack.mcmeta не в корне — игра такой пак не увидит.
+        make_jar(&src, &[("x/pack.mcmeta", "{}"), ("plugin.yml", "name: x")]);
+        let plan = datapack_plan(&src);
+        let world = t.0.join("world");
+        let fetch = |_: &str, dest: &Path| -> Result<()> {
+            std::fs::copy(&src, dest)?;
+            Ok(())
+        };
+        let e = install_with(&plan, &world, fetch).unwrap_err();
+        assert!(format!("{e:#}").contains("pack.mcmeta"), "{e:#}");
+        assert!(!world.join("datapacks").join("x-1.0.zip").exists());
     }
 
     #[test]

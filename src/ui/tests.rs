@@ -474,6 +474,7 @@ async fn datapack_toggle_with_players_asks_before_reload() {
             panic!("ждали вопрос о перезагрузке датапаков");
         };
         assert!(text.contains("Alex"), "{text}");
+        assert!(toast_text(&a).contains("minecraft:reload"), "{}", toast_text(&a));
         assert!(sent_commands(&mut rx).is_empty(), "до ответа ничего не отправляется");
         press(&mut a, KeyCode::Enter);
         assert_eq!(sent_commands(&mut rx), ["minecraft:reload"]);
@@ -545,18 +546,153 @@ async fn datapack_disabled_in_game_on_stopped_server() {
 async fn datapack_disabled_in_game_on_running_server_enables_in_game() {
     let srv = TempServer::new("dp-ingame-on");
     srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    srv.pack("b.zip", &["data/ns/enchantment/x.json"]);
+    crate::datapacks::tests::level_dat(&srv.level().join("level.dat"), &["file/a.zip", "file/b.zip"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&[]))], client);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        assert!(a.popup.is_none(), "игроков нет — без вопроса");
+        assert!(srv.level().join("datapacks/a.zip").is_file(), "файл не переносится");
+        assert_eq!(sent_commands(&mut rx), [r#"datapack enable "file/a.zip""#]);
+        assert_eq!(toast_text(&a), "a: enabled in game");
+        assert!(!a.datapacks.items[0].disabled_in_game, "строка больше не «выкл в игре»");
+        notice(&mut a, r#"sent: datapack enable "file/a.zip""#, NoticeKind::Ok);
+        assert_eq!(toast_text(&a), "a: enabled in game");
+        // Пак, которому нужен перезапуск: команда та же, но сообщение честно говорит о перезапуске.
+        press(&mut a, KeyCode::Down);
+        key(&mut a, ' ');
+        assert_eq!(sent_commands(&mut rx), [r#"datapack enable "file/b.zip""#]);
+        assert_eq!(toast_text(&a), "b: enabled in game — takes effect after a restart");
+        assert!(!a.datapacks.items[1].disabled_in_game);
+    });
+}
+
+#[tokio::test]
+async fn datapack_enable_in_game_with_players_asks() {
+    let srv = TempServer::new("dp-ingame-players");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
     crate::datapacks::tests::level_dat(&srv.level().join("level.dat"), &["file/a.zip"]);
     with_lang(Lang::En, || {
         let (client, mut rx) = Client::recording();
         let mut a = app_with(vec![srv.view(Some(&["Alex"]))], client);
         open_datapacks(&mut a);
         key(&mut a, ' ');
-        assert!(srv.level().join("datapacks/a.zip").is_file(), "файл не переносится");
+        let Some(Popup::Confirm { text, action: Action::EnableDatapackInGame(0, d), .. }) = &a.popup else {
+            panic!("datapack enable перезагружает датапаки — при игроках сначала вопрос");
+        };
+        assert_eq!(d.file_name, "a.zip");
+        assert!(text.contains("Alex") && text.contains("A reload causes a brief lag."), "{text}");
+        assert!(sent_commands(&mut rx).is_empty(), "до ответа ничего не отправляется");
+        press(&mut a, KeyCode::Esc);
+        assert!(sent_commands(&mut rx).is_empty(), "отказ — ничего не отправляется");
+        assert!(a.datapacks.items[0].disabled_in_game);
+        key(&mut a, ' ');
+        press(&mut a, KeyCode::Enter);
         assert_eq!(sent_commands(&mut rx), [r#"datapack enable "file/a.zip""#]);
-        assert!(toast_text(&a).contains("a: enabled in game"), "{}", toast_text(&a));
-        notice(&mut a, r#"sent: datapack enable "file/a.zip""#, NoticeKind::Ok);
-        assert!(toast_text(&a).contains("a: enabled in game"), "{}", toast_text(&a));
+        assert_eq!(toast_text(&a), "a: enabled in game");
+        assert!(!a.datapacks.items[0].disabled_in_game, "строка больше не «выкл в игре»");
+        assert!(srv.level().join("datapacks/a.zip").is_file(), "файл не переносится");
     });
+}
+
+#[tokio::test]
+async fn datapack_reload_declined_leaves_a_hint() {
+    let srv = TempServer::new("dp-declined");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&["Alex"]))], client);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        assert!(matches!(a.popup, Some(Popup::Confirm { action: Action::ReloadDatapacks(0), .. })));
+        press(&mut a, KeyCode::Esc);
+        assert!(a.popup.is_none());
+        assert!(sent_commands(&mut rx).is_empty());
+        let t = toast_text(&a);
+        assert!(t.starts_with("a: disabled") && t.contains("minecraft:reload") && t.contains("restart"), "{t}");
+    });
+}
+
+#[tokio::test]
+async fn datapack_toggle_waits_for_download() {
+    let srv = TempServer::new("dp-busy");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&[]))], client);
+        open_datapacks(&mut a);
+        a.datapacks.busy = Some("…".into());
+        key(&mut a, ' ');
+        assert!(toast_text(&a).contains("please wait"), "{}", toast_text(&a));
+        assert!(srv.level().join("datapacks/a.zip").is_file(), "пока идёт загрузка, файлы не трогаем");
+        assert!(sent_commands(&mut rx).is_empty());
+    });
+}
+
+#[tokio::test]
+async fn datapack_check_with_empty_list_says_so() {
+    let srv = TempServer::new("dp-check-empty");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        open_datapacks(&mut a);
+        key(&mut a, 'c');
+        assert_eq!(toast_text(&a), "no datapacks");
+        assert!(!a.datapacks.checking);
+    });
+}
+
+#[tokio::test]
+async fn addons_lists_footer_mentions_update_all() {
+    use crate::app::SubLevel;
+    with_lang(Lang::En, || {
+        let mut a = app(vec![local_running()]);
+        key(&mut a, '4');
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.addons.level, SubLevel::Lists);
+        let screen = render(&a, 240, 30);
+        let footer = screen.lines().rev().find(|l| !l.is_empty()).unwrap_or_default();
+        assert!(footer.contains("U update all"), "{footer}");
+    });
+}
+
+#[tokio::test]
+async fn levels_reset_when_focus_leaves_content() {
+    use crate::app::{AddonsSub, SubLevel};
+    let mut a = app(vec![local_running()]);
+    // Esc — к списку серверов; → возвращает фокус; ещё → листает вкладки окна, а не подвкладки.
+    key(&mut a, '4');
+    press(&mut a, KeyCode::Down);
+    assert_eq!(a.addons.level, SubLevel::Lists);
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(a.addons.level, SubLevel::Tabs, "фокус ушёл с содержимого — уровень сброшен");
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Right);
+    assert_eq!((a.tab, a.addons.sub), (Tab::Settings, AddonsSub::Plugins));
+    // Tab — к строке ввода, Shift+Tab — обратно.
+    key(&mut a, '4');
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Tab);
+    press(&mut a, KeyCode::BackTab);
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Settings, "Tab/Shift+Tab: → снова листает вкладки окна");
+    // Shift+Tab с содержимого — к списку серверов.
+    key(&mut a, '4');
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::BackTab);
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Settings);
+    // То же на «Доступе».
+    key(&mut a, '3');
+    press(&mut a, KeyCode::Down);
+    assert_eq!(a.access.level, SubLevel::Lists);
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(a.access.level, SubLevel::Tabs);
+    press(&mut a, KeyCode::Right);
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Addons);
 }
 
 #[tokio::test]
