@@ -97,6 +97,8 @@ pub enum Opt {
     Notify,
     BackupEvery,
     BackupKeep,
+    BackupMode,
+    BackupCopyTo,
     RestartTimes,
     Language,
 }
@@ -109,6 +111,8 @@ impl Opt {
             Opt::Notify => tr!("Уведомления рабочего стола", "Desktop notifications"),
             Opt::BackupEvery => tr!("Авто-бэкап, каждые N ч (0 — выкл)", "Auto backup every N h (0 = off)"),
             Opt::BackupKeep => tr!("Хранить бэкапов", "Backups to keep"),
+            Opt::BackupMode => tr!("Вид бэкапа", "Backup type"),
+            Opt::BackupCopyTo => tr!("Копировать бэкапы в (папки, rclone:…)", "Copy backups to (folders, rclone:…)"),
             Opt::RestartTimes => tr!("Рестарт по расписанию (ЧЧ:ММ, …)", "Scheduled restarts (HH:MM, …)"),
             Opt::Language => tr!("Язык интерфейса", "Interface language"),
         }
@@ -572,7 +576,7 @@ impl App {
             Action::Kill(id) => self.send(Request::Kill { id }),
             Action::RemoteStop(id) => self.send(Request::Stop { id, restart: false }),
             Action::Command { id, cmd } => self.send(Request::Command { id, cmd, user: false }),
-            Action::DeleteBackup(p) => match std::fs::remove_file(&p) {
+            Action::DeleteBackup(p) => match crate::backup::delete_path(&p) {
                 Ok(()) => {
                     self.toast(tr!("бэкап удалён", "backup deleted"), ToastKind::Ok);
                     self.refresh_backups();
@@ -651,6 +655,8 @@ impl App {
                 Opt::Notify,
                 Opt::BackupEvery,
                 Opt::BackupKeep,
+                Opt::BackupMode,
+                Opt::BackupCopyTo,
                 Opt::RestartTimes,
                 Opt::Language,
             ]
@@ -668,6 +674,20 @@ impl App {
             Opt::Notify => yes_no(c.notify),
             Opt::BackupEvery => c.backup_every_hours.to_string(),
             Opt::BackupKeep => c.backup_keep.to_string(),
+            Opt::BackupMode => match c.backup_mode {
+                crate::config::BackupMode::Full => tr!("полный архив .tar.gz", "full .tar.gz archive"),
+                crate::config::BackupMode::Incremental => {
+                    tr!("инкрементальный (только изменения)", "incremental (changes only)")
+                }
+            }
+            .into(),
+            Opt::BackupCopyTo => {
+                if c.backup_copy_to.is_empty() {
+                    tr!("никуда", "nowhere").into()
+                } else {
+                    c.backup_copy_to.join("; ")
+                }
+            }
             Opt::RestartTimes => {
                 if c.restart_times.is_empty() {
                     tr!("выкл", "off").into()
@@ -697,6 +717,11 @@ impl App {
             Opt::Autostart => self.update_cfg(|c| c.autostart = !c.autostart),
             Opt::AutoRestart => self.update_cfg(|c| c.auto_restart = !c.auto_restart),
             Opt::Notify => self.update_cfg(|c| c.notify = !c.notify),
+            Opt::BackupMode => self.update_cfg(|c| {
+                use crate::config::BackupMode;
+                c.backup_mode =
+                    if c.backup_mode == BackupMode::Full { BackupMode::Incremental } else { BackupMode::Full }
+            }),
             Opt::Language => {
                 let next = match self.language.as_deref() {
                     None => Some("ru"),
@@ -720,6 +745,7 @@ impl App {
             Opt::BackupEvery => c.backup_every_hours.to_string(),
             Opt::BackupKeep => c.backup_keep.to_string(),
             Opt::RestartTimes => c.restart_times.join(", "),
+            Opt::BackupCopyTo => c.backup_copy_to.join("; "),
             _ => return self.toggle_opt(o),
         };
         self.popup =
@@ -737,6 +763,11 @@ impl App {
                 Ok(n) if n >= 1 => self.update_cfg(|c| c.backup_keep = n),
                 _ => bad(self),
             },
+            Opt::BackupCopyTo => {
+                let targets: Vec<String> =
+                    v.split(';').map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect();
+                self.update_cfg(|c| c.backup_copy_to = targets);
+            }
             Opt::RestartTimes => {
                 let parts: Vec<String> =
                     v.split([',', ' ', ';']).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).collect();

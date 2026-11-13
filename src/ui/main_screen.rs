@@ -739,12 +739,22 @@ fn draw_backups(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     } else {
         String::new()
     };
+    let mode = if s.cfg.backup_mode == crate::config::BackupMode::Incremental {
+        tr!(" · инкрементальные", " · incremental")
+    } else {
+        ""
+    };
+    let copies = if s.cfg.backup_copy_to.is_empty() {
+        String::new()
+    } else {
+        tr!(format!(" · копии: {}", s.cfg.backup_copy_to.len()), format!(" · copies: {}", s.cfg.backup_copy_to.len()))
+    };
     let head = match &s.backup_progress {
         Some(p) => Line::styled(format!("⏳ {p}"), Style::new().fg(theme::WARN)),
         None => Line::styled(
             tr!(
-                format!("Пути: {} · хранить: {}{auto}", s.cfg.backup_paths.join(", "), s.cfg.backup_keep),
-                format!("Paths: {} · keep: {}{auto}", s.cfg.backup_paths.join(", "), s.cfg.backup_keep)
+                format!("Пути: {} · хранить: {}{auto}{mode}{copies}", s.cfg.backup_paths.join(", "), s.cfg.backup_keep),
+                format!("Paths: {} · keep: {}{auto}{mode}{copies}", s.cfg.backup_paths.join(", "), s.cfg.backup_keep)
             ),
             Style::new().fg(theme::MUTED),
         ),
@@ -766,13 +776,23 @@ fn draw_backups(app: &App, f: &mut Frame, area: Rect, focused: bool) {
                 .modified
                 .map(|m| chrono::DateTime::<chrono::Local>::from(m).format("%d.%m.%Y %H:%M").to_string())
                 .unwrap_or_default();
-            Row::new(vec![name, when, human_bytes(b.size)])
+            let (icon, size) = match b.kind {
+                crate::backup::BackupKind::Full => ("📦", human_bytes(b.size)),
+                crate::backup::BackupKind::Incremental => {
+                    ("🔗", format!("+{} / {}", human_bytes(b.size), human_bytes(b.total_size)))
+                }
+            };
+            Row::new(vec![format!("{icon} {name}"), when, size])
         })
         .collect();
-    let table = Table::new(rows, [Constraint::Min(20), Constraint::Length(17), Constraint::Length(11)])
+    let table = Table::new(rows, [Constraint::Min(20), Constraint::Length(17), Constraint::Length(23)])
         .header(
-            Row::new(vec![tr!("Файл", "File"), tr!("Дата", "Date"), tr!("Размер", "Size")])
-                .style(Style::new().fg(theme::MUTED)),
+            Row::new(vec![
+                tr!("Бэкап", "Backup"),
+                tr!("Дата", "Date"),
+                tr!("Размер (новое / всего)", "Size (new / total)"),
+            ])
+            .style(Style::new().fg(theme::MUTED)),
         )
         .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
     let mut st = TableState::default().with_selected(focused.then_some(app.backups_sel));
