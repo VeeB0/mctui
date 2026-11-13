@@ -1198,3 +1198,92 @@ async fn overworld_reset_needs_confirm_and_world_name() {
     assert_eq!(stash.len(), 1);
     assert!(stash[0].join("world/region/r.0.0.mca").exists());
 }
+
+#[tokio::test]
+async fn new_world_asks_name_seed_and_type() {
+    let srv = TempServer::new("new-world");
+    std::fs::create_dir_all(srv.level()).unwrap();
+    std::fs::create_dir_all(srv.0.join("world2")).unwrap();
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'N');
+        let Some(Popup::Edit { input, target: crate::app::EditTarget::NewWorldName, .. }) = &a.popup else {
+            panic!("expected the name prompt")
+        };
+        assert_eq!(input.value, "world3"); // world2 уже занят
+        // Занятое имя — ошибка, ничего не записано.
+        press(&mut a, KeyCode::Backspace);
+        key(&mut a, '2');
+        press(&mut a, KeyCode::Enter);
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("already exists"), "{}", toast_text(&a));
+        // Имя → сид → тип.
+        key(&mut a, 'N');
+        for _ in 0..6 {
+            press(&mut a, KeyCode::Backspace);
+        }
+        for c in "skyland".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.popup, Some(Popup::Edit { target: crate::app::EditTarget::NewWorldSeed { .. }, .. })));
+        // «\\» в сиде исказил бы server.properties — не принимаем.
+        key(&mut a, '\\');
+        press(&mut a, KeyCode::Enter);
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("cannot contain"), "{}", toast_text(&a));
+        key(&mut a, 'N');
+        for _ in 0..6 {
+            press(&mut a, KeyCode::Backspace);
+        }
+        for c in "skyland".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        for c in "12345".chars() {
+            key(&mut a, c);
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.popup, Some(Popup::NewWorld { kind: 0, .. })));
+        press(&mut a, KeyCode::Right);
+        let screen = render(&a, 80, 24);
+        for part in ["skyland", "12345", "◀ flat ▶", "not deleted", "Enter  create"] {
+            assert!(screen.contains(part), "{part}\n{screen}");
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(a.popup.is_none(), "a stopped server is not offered a restart");
+        assert_eq!(a.servers[0].cfg.backup_paths, ["skyland"], "backups follow the main world");
+    });
+    let props = std::fs::read_to_string(srv.0.join("server.properties")).unwrap();
+    for line in ["level-name=skyland", "level-seed=12345", "level-type=minecraft:flat"] {
+        assert!(props.lines().any(|l| l == line), "{line}\n{props}");
+    }
+    assert!(srv.level().is_dir(), "the old world stays");
+}
+
+#[tokio::test]
+async fn new_world_on_running_server_offers_restart() {
+    let srv = TempServer::new("new-world-running");
+    with_lang(Lang::En, || {
+        let mut v = srv.view(Some(&["Alex"]));
+        v.version = Some("Paper 1.18.2".into());
+        let mut a = app(vec![v]);
+        open_world(&mut a, &srv);
+        key(&mut a, 'N');
+        press(&mut a, KeyCode::Enter); // world2
+        press(&mut a, KeyCode::Enter); // случайный сид
+        let Some(Popup::NewWorld { seed, .. }) = &a.popup else { panic!("expected the summary") };
+        assert!(seed.is_empty());
+        assert!(render(&a, 80, 24).contains("random"));
+        press(&mut a, KeyCode::Enter);
+        let Some(Popup::Confirm { text, action: Action::Stop { restart: true, .. }, .. }) = &a.popup else {
+            panic!("expected the restart offer")
+        };
+        assert!(text.contains("Players online: 1"), "{text}");
+    });
+    let props = std::fs::read_to_string(srv.0.join("server.properties")).unwrap();
+    assert!(props.lines().any(|l| l == "level-name=world2"), "{props}");
+    assert!(props.lines().any(|l| l == "level-seed="), "an empty seed means random: {props}");
+    assert!(props.lines().any(|l| l == "level-type=default"), "1.18 needs the old type name: {props}");
+}

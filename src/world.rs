@@ -452,6 +452,89 @@ pub fn reset_stashes(dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Типы нового мира (`level-type`): значение и название для интерфейса.
+pub const WORLD_TYPES: [(&str, &str, &str); 4] = [
+    ("minecraft:normal", "обычный", "normal"),
+    ("minecraft:flat", "плоский", "flat"),
+    ("minecraft:large_biomes", "большие биомы", "large biomes"),
+    ("minecraft:amplified", "амплифицированный", "amplified"),
+];
+
+/// Значение `level-type` для типа `WORLD_TYPES[i]` на версии `version` (например «Purpur 26.3» или «1.18.2»):
+/// до 1.19 Minecraft понимает только старые имена (`default`, `largebiomes`…), иначе молча делает обычный мир.
+pub fn level_type_value(i: usize, version: Option<&str>) -> &'static str {
+    const LEGACY: [&str; 4] = ["default", "flat", "largebiomes", "amplified"];
+    let i = i % WORLD_TYPES.len();
+    let old = version
+        .and_then(|v| {
+            v.split_whitespace().find_map(|w| {
+                let mut it = w.split('.').map(|p| p.parse::<u32>());
+                match (it.next(), it.next()) {
+                    (Some(Ok(major)), Some(Ok(minor))) => Some((major, minor)),
+                    _ => None,
+                }
+            })
+        })
+        .is_some_and(|(major, minor)| major == 1 && minor < 19);
+    if old { LEGACY[i] } else { WORLD_TYPES[i].0 }
+}
+
+/// Пути бэкапа после смены основного мира `old` → `new`: `old`, `old_nether`, `old_the_end` заменяются
+/// новыми (иначе бэкапы продолжат копировать прежний мир). `None` — менять нечего (например, `.`).
+pub fn retarget_backup_paths(paths: &[String], old: &str, new: &str) -> Option<Vec<String>> {
+    let mut changed = false;
+    let out: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            let t = p.trim_end_matches('/');
+            for suffix in ["", "_nether", "_the_end"] {
+                if t == format!("{old}{suffix}") {
+                    changed = true;
+                    return format!("{new}{suffix}");
+                }
+            }
+            p.clone()
+        })
+        .collect();
+    changed.then_some(out)
+}
+
+/// Название типа мира `WORLD_TYPES[i]`.
+pub fn world_type_title(i: usize) -> &'static str {
+    let (_, ru, en) = WORLD_TYPES[i % WORLD_TYPES.len()];
+    crate::tr!(ru, en)
+}
+
+fn world_name_taken(dir: &Path, name: &str) -> bool {
+    ["", "_nether", "_the_end"].iter().any(|s| dir.join(format!("{name}{s}")).exists())
+}
+
+/// Свободное имя для нового мира: `<base>2`, `<base>3`… (нет ни папки, ни отдельных папок Bukkit);
+/// цифры в конце `base` отбрасываются: для `world2` предлагается `world3`, а не `world22`.
+pub fn free_world_name(dir: &Path, base: &str) -> String {
+    let stem = base.trim_end_matches(|c: char| c.is_ascii_digit());
+    let stem = if stem.is_empty() { base } else { stem };
+    (2..).map(|i| format!("{stem}{i}")).find(|n| !world_name_taken(dir, n)).unwrap_or_else(|| base.into())
+}
+
+/// Можно ли создать мир `name` в папке сервера: имя допустимо и такой папки ещё нет.
+pub fn check_new_world_name(dir: &Path, name: &str) -> Result<()> {
+    validate_level_name(name)?;
+    if name.starts_with('.') {
+        bail!(crate::tr!(
+            format!("имя мира не может начинаться с точки: «{name}»"),
+            format!("a world name cannot start with a dot: “{name}”")
+        ));
+    }
+    if world_name_taken(dir, name) {
+        bail!(crate::tr!(
+            format!("мир «{name}» уже есть — выберите другое имя (переключиться на него — Enter в списке)"),
+            format!("world “{name}” already exists — pick another name (switch to it with Enter in the list)")
+        ));
+    }
+    Ok(())
+}
+
 /// Допустимое имя папки мира: не пустое, без разделителей пути и управляющих символов.
 pub fn validate_level_name(name: &str) -> Result<()> {
     let bad = name.trim().is_empty()
@@ -1100,6 +1183,39 @@ mod tests {
         file(&d.join("world/dimensions/mod/sky/region/r.0.0.mca"), 1);
         assert!(reset_dimension(&d, "world", Dimension::Custom("mod:sky".into())).is_err());
         assert!(d.join("world/dimensions/mod/sky/region/r.0.0.mca").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn new_world_name_is_free_and_checked() {
+        let d = tmp("new-world");
+        assert_eq!(free_world_name(&d, "world"), "world2");
+        std::fs::create_dir_all(d.join("world2")).unwrap();
+        std::fs::create_dir_all(d.join("world3_nether")).unwrap();
+        assert_eq!(free_world_name(&d, "world"), "world4");
+        assert!(check_new_world_name(&d, "world2").is_err());
+        assert!(check_new_world_name(&d, "../x").is_err());
+        assert!(check_new_world_name(&d, "").is_err());
+        assert!(check_new_world_name(&d, "survival").is_ok());
+        assert!(check_new_world_name(&d, "world3").is_err()); // есть world3_nether
+        assert!(check_new_world_name(&d, ".hidden").is_err());
+        assert_eq!(free_world_name(&d, "world2"), "world4");
+        assert_eq!(free_world_name(&d, "123"), "1232");
+        assert_eq!(world_type_title(5), world_type_title(1));
+        // level-type по версии
+        assert_eq!(level_type_value(1, Some("Purpur 26.3")), "minecraft:flat");
+        assert_eq!(level_type_value(2, Some("1.19")), "minecraft:large_biomes");
+        assert_eq!(level_type_value(2, Some("Paper 1.18.2")), "largebiomes");
+        assert_eq!(level_type_value(0, Some("1.16.5")), "default");
+        assert_eq!(level_type_value(3, None), "minecraft:amplified");
+        // пути бэкапа
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            retarget_backup_paths(&p(&["world", "world_nether", "plugins", "world_the_end/"]), "world", "sky"),
+            Some(p(&["sky", "sky_nether", "plugins", "sky_the_end"]))
+        );
+        assert_eq!(retarget_backup_paths(&p(&["."]), "world", "sky"), None);
+        assert_eq!(retarget_backup_paths(&p(&["worlds"]), "world", "sky"), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

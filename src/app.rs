@@ -190,6 +190,11 @@ pub enum EditTarget {
     Chat,
     LogSearch,
     PregenRadius(crate::world::Dimension),
+    /// Создание мира: имя, затем сид.
+    NewWorldName,
+    NewWorldSeed {
+        name: String,
+    },
     /// Подтверждение сброса верхнего мира `level` сервера `id`: нужно ввести имя мира.
     ResetOverworld {
         id: usize,
@@ -210,6 +215,12 @@ pub enum Popup {
         title: String,
         input: TextInput,
         target: EditTarget,
+    },
+    /// Последний шаг создания мира: сводка и выбор типа (`←→`). `kind` — индекс в `world::WORLD_TYPES`.
+    NewWorld {
+        name: String,
+        seed: String,
+        kind: usize,
     },
     /// Выход при работающих серверах: закрыть окно или остановить всё.
     Quit {
@@ -836,9 +847,10 @@ impl App {
         }
     }
 
-    fn save_props(&mut self, msg_ok: String) {
+    /// Записывает server.properties выбранного сервера; `true` — записано.
+    fn save_props(&mut self, msg_ok: String) -> bool {
         let s = self.sel_mut();
-        let (Some(path), Some(props)) = (s.cfg.properties_path(), &s.props) else { return };
+        let (Some(path), Some(props)) = (s.cfg.properties_path(), &s.props) else { return false };
         let res = props.save(&path);
         let id = s.id;
         let running = s.running();
@@ -852,8 +864,12 @@ impl App {
                     ""
                 };
                 self.toast(format!("{msg_ok}{tail}"), ToastKind::Ok);
+                true
             }
-            Err(e) => self.toast(tr!(format!("ошибка записи: {e}"), format!("write error: {e}")), ToastKind::Error),
+            Err(e) => {
+                self.toast(tr!(format!("ошибка записи: {e}"), format!("write error: {e}")), ToastKind::Error);
+                false
+            }
         }
     }
 
