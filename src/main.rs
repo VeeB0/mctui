@@ -7,6 +7,7 @@ mod client;
 mod complete;
 mod config;
 mod core;
+mod core_update;
 mod crash;
 mod create;
 mod daemon;
@@ -26,6 +27,7 @@ mod service;
 mod setup;
 mod ui;
 mod update;
+mod velocity;
 mod world;
 
 use anyhow::Result;
