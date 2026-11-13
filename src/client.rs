@@ -130,7 +130,7 @@ async fn supervise(
     }
 }
 
-/// Разовый запрос из командной строки (`mctui daemon stop` и т. п.). None — служба не запущена.
+/// Разовый запрос из командной строки (`pechka daemon stop` и т. п.). None — служба не запущена.
 pub async fn oneshot(config_path: &std::path::Path, req: Request) -> Result<Option<Msg>> {
     let Ok((mut stream, welcome)) = try_connect(config_path).await else { return Ok(None) };
     stream.write_all(proto::encode(&req).as_bytes()).await?;
@@ -138,7 +138,7 @@ pub async fn oneshot(config_path: &std::path::Path, req: Request) -> Result<Opti
     Ok(Some(welcome))
 }
 
-/// Состояние службы для `mctui daemon status`.
+/// Состояние службы для `pechka daemon status`.
 pub async fn status(config_path: &std::path::Path) -> Result<Option<(Msg, Vec<proto::ServerView>)>> {
     let Ok((stream, welcome)) = try_connect(config_path).await else { return Ok(None) };
     let mut lines = BufReader::new(stream).lines();

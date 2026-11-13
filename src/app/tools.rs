@@ -296,8 +296,8 @@ impl App {
                         );
                         if a.script.is_some() {
                             text += tr!(
-                                "\nКопия старого скрипта сохранится в .mctui-old/.",
-                                "\nA copy of the old script is kept in .mctui-old/."
+                                "\nКопия старого скрипта сохранится в .pechka-old/.",
+                                "\nA copy of the old script is kept in .pechka-old/."
                             );
                         }
                         if running {
@@ -402,8 +402,8 @@ impl App {
             )
         } else {
             tr!(
-                format!("Поставить новую сборку {version}? Старый jar переносится в .mctui-old/."),
-                format!("Install the new {version} build? The old jar is moved to .mctui-old/.")
+                format!("Поставить новую сборку {version}? Старый jar переносится в .pechka-old/."),
+                format!("Install the new {version} build? The old jar is moved to .pechka-old/.")
             )
         };
         if let Some(r) = &compat {
@@ -602,8 +602,8 @@ pub(super) fn fill_compat_panel(p: &mut Panel, inst: Installed, version: String,
         lines.push(PanelLine::new(
             Tone::Info,
             tr!(
-                format!("u — поставить новые сборки ({n}); старые файлы уйдут в .mctui-old/"),
-                format!("u — install the new builds ({n}); old files go to .mctui-old/")
+                format!("u — поставить новые сборки ({n}); старые файлы уйдут в .pechka-old/"),
+                format!("u — install the new builds ({n}); old files go to .pechka-old/")
             ),
         ));
     }

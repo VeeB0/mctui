@@ -1,16 +1,16 @@
 #!/bin/sh
 # Render the Homebrew formula for a release.
-# Usage: render.sh <version> <dir-with-.sha256-files> > Formula/mctui.rb
-# The directory must contain mctui-<target>.sha256 ("<hash>  <name>") for the
+# Usage: render.sh <version> <dir-with-.sha256-files> > Formula/pechka.rb
+# The directory must contain pechka-<target>.sha256 ("<hash>  <name>") for the
 # four macOS/Linux targets, as published in each GitHub release.
 set -eu
 
 version=$1
 shadir=$2
-tmpl=$(dirname "$0")/mctui.rb.tmpl
+tmpl=$(dirname "$0")/pechka.rb.tmpl
 
 sha() {
-  f="$shadir/mctui-$1.sha256"
+  f="$shadir/pechka-$1.sha256"
   [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }
   h=$(cut -d' ' -f1 "$f")
   echo "$h" | grep -Eq '^[0-9a-f]{64}$' || { echo "bad sha256 in $f" >&2; exit 1; }

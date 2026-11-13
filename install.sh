@@ -1,12 +1,14 @@
 #!/bin/sh
-# Установка / обновление mctui (macOS, Linux):
-#   curl -fsSL https://github.com/VeeB0/mctui/releases/latest/download/install.sh | sh
-# Переменные: MCTUI_VERSION=v0.1.0 — конкретная версия; MCTUI_INSTALL_DIR — куда ставить (по умолчанию ~/.local/bin).
-# Настройки (~/.config/mctui/servers.toml) установка не трогает.
+# Установка / обновление pechka (macOS, Linux):
+#   curl -fsSL https://github.com/VeeB0/pechka/releases/latest/download/install.sh | sh
+# Переменные: PECHKA_VERSION=v0.7.0 — конкретная версия; PECHKA_INSTALL_DIR — куда ставить (по умолчанию ~/.local/bin).
+# Прежние MCTUI_VERSION / MCTUI_INSTALL_DIR / MCTUI_REPO тоже понимаются.
+# Настройки (~/.config/pechka/servers.toml) установка не трогает.
 set -eu
 
-REPO="${MCTUI_REPO:-VeeB0/mctui}"
-DIR="${MCTUI_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="${PECHKA_REPO:-${MCTUI_REPO:-VeeB0/pechka}}"
+DIR="${PECHKA_INSTALL_DIR:-${MCTUI_INSTALL_DIR:-$HOME/.local/bin}}"
+VERSION="${PECHKA_VERSION:-${MCTUI_VERSION:-}}"
 
 say() { printf '\033[1;32m›\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mошибка:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -24,31 +26,36 @@ if [ "$target" = x86_64-apple-darwin ] && [ "$(sysctl -n sysctl.proc_translated 
   target=aarch64-apple-darwin
 fi
 
-if [ -n "${MCTUI_VERSION:-}" ]; then
-  base="https://github.com/$REPO/releases/download/$MCTUI_VERSION"
+if [ -n "$VERSION" ]; then
+  base="https://github.com/$REPO/releases/download/$VERSION"
 else
   base="https://github.com/$REPO/releases/latest/download"
 fi
-asset="mctui-$target"
+asset="pechka-$target"
 
 command -v curl >/dev/null 2>&1 || die "нужен curl"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT INT TERM
 
 say "Скачиваю $asset…"
-curl -fSL --progress-bar "$base/$asset" -o "$tmp/mctui" || die "не удалось скачать $base/$asset"
+curl -fSL --progress-bar "$base/$asset" -o "$tmp/pechka" || die "не удалось скачать $base/$asset"
 curl -fsSL "$base/$asset.sha256" -o "$tmp/sum" || die "не удалось скачать контрольную сумму"
 
 expected=$(cut -d' ' -f1 < "$tmp/sum")
-if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$tmp/mctui" | cut -d' ' -f1)
-else actual=$(shasum -a 256 "$tmp/mctui" | cut -d' ' -f1); fi
+if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$tmp/pechka" | cut -d' ' -f1)
+else actual=$(shasum -a 256 "$tmp/pechka" | cut -d' ' -f1); fi
 [ "$expected" = "$actual" ] || die "контрольная сумма не совпала — файл повреждён"
 
 mkdir -p "$DIR"
-chmod +x "$tmp/mctui"
+chmod +x "$tmp/pechka"
 # macOS: файл, скачанный curl'ом, не помечается карантином, но на всякий случай
-xattr -d com.apple.quarantine "$tmp/mctui" 2>/dev/null || true
-mv -f "$tmp/mctui" "$DIR/mctui"
-say "Установлено: $DIR/mctui ($("$DIR/mctui" --version))"
+xattr -d com.apple.quarantine "$tmp/pechka" 2>/dev/null || true
+mv -f "$tmp/pechka" "$DIR/pechka"
+say "Установлено: $DIR/pechka ($("$DIR/pechka" --version))"
+# Программа раньше называлась mctui: старый файл заменяем ссылкой, команда mctui продолжит работать.
+if [ -f "$DIR/mctui" ] && [ ! -L "$DIR/mctui" ]; then
+  ln -sf pechka "$DIR/mctui"
+  say "mctui теперь называется pechka; команда mctui оставлена синонимом."
+fi
 
 # PATH прописываем в файл запуска оболочки всегда (идемпотентно): текущий $PATH может прийти
 # из IDE/агента и не совпадать с тем, что увидит новое окно терминала.
@@ -57,16 +64,16 @@ case "${SHELL:-}" in
   */zsh)  rc="$HOME/.zshrc" ;;
   */bash) if [ "$os" = Darwin ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
   */fish) rc="" ; mkdir -p "$HOME/.config/fish/conf.d"
-          echo "fish_add_path $DIR" > "$HOME/.config/fish/conf.d/mctui.fish" ;;
+          echo "fish_add_path $DIR" > "$HOME/.config/fish/conf.d/pechka.fish" ;;
   *)      rc="$HOME/.profile" ;;
 esac
 short_dir=$(printf '%s' "$DIR" | sed "s|^$HOME|\$HOME|")
 if [ -n "$rc" ] && ! grep -qsF "$DIR" "$rc" && ! grep -qsF "$short_dir" "$rc"; then
-  printf '\n# mctui\n%s\n' "$line" >> "$rc"
+  printf '\n# pechka\n%s\n' "$line" >> "$rc"
   say "Добавил $DIR в PATH ($rc)."
 fi
 case ":$PATH:" in
   *":$DIR:"*) ;;
   *) say "Откройте новое окно терминала (или выполните: $line)" ;;
 esac
-say "Запуск: mctui    Обновление: mctui update"
+say "Запуск: pechka    Обновление: pechka update"

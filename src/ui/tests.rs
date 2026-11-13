@@ -1,7 +1,7 @@
 //! Снимки экрана: окно рисуется в `TestBackend` и сравнивается с текстом в `src/ui/snapshots/*.txt`.
 //!
 //! Изменили интерфейс намеренно — пересоздать снимки и просмотреть разницу в git diff:
-//! `MCTUI_UPDATE_SNAPSHOTS=1 cargo test ui::tests`.
+//! `PECHKA_UPDATE_SNAPSHOTS=1 cargo test ui::tests`.
 //! Номер версии в тексте заменяется на `X.Y.Z`, чтобы снимки не менялись с каждым релизом.
 //! На Windows не запускаются: там другие разделители путей и подсказки (`C:\…`).
 
@@ -18,7 +18,7 @@ use ratatui::backend::TestBackend;
 use std::path::{Path, PathBuf};
 
 /// Папка, которой нет: окно не найдёт там ни server.properties, ни логов — снимок не зависит от машины.
-const NOWHERE: &str = "/nonexistent/mctui-snapshot";
+const NOWHERE: &str = "/nonexistent/pechka-snapshot";
 
 fn local_running() -> ServerView {
     let cfg = ServerConfig::new_local(
@@ -86,12 +86,12 @@ fn render(app: &App, w: u16, h: u16) -> String {
 
 fn check(name: &str, actual: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/snapshots").join(format!("{name}.txt"));
-    if std::env::var_os("MCTUI_UPDATE_SNAPSHOTS").is_some() {
+    if std::env::var_os("PECHKA_UPDATE_SNAPSHOTS").is_some() {
         std::fs::write(&path, actual).unwrap();
         return;
     }
     let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-        panic!("no snapshot {} — create it: MCTUI_UPDATE_SNAPSHOTS=1 cargo test ui::tests", path.display())
+        panic!("no snapshot {} — create it: PECHKA_UPDATE_SNAPSHOTS=1 cargo test ui::tests", path.display())
     });
     if expected != actual {
         let diff: Vec<String> = expected
@@ -103,7 +103,7 @@ fn check(name: &str, actual: &str) {
             .map(|(i, (e, a))| format!("line {}:\n  expected: {e}\n  actual:   {a}", i + 1))
             .collect();
         panic!(
-            "snapshot {name} differs (MCTUI_UPDATE_SNAPSHOTS=1 cargo test ui::tests to accept):\n{}\n--- actual ---\n{actual}",
+            "snapshot {name} differs (PECHKA_UPDATE_SNAPSHOTS=1 cargo test ui::tests to accept):\n{}\n--- actual ---\n{actual}",
             diff.join("\n")
         );
     }

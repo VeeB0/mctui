@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc};
 
 const SAVE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Сводка снимка внутри его папки.
-pub const SNAPSHOT_META: &str = ".mctui-snapshot.json";
+pub const SNAPSHOT_META: &str = ".pechka-snapshot.json";
 const ARCHIVE_EXT: &str = ".tar.gz";
 const SNAP_EXT: &str = ".snap";
 /// Недописанный снимок: `<name>.snap.partial/`.
@@ -89,7 +89,7 @@ pub struct BackupInfo {
     pub modified: Option<SystemTime>,
 }
 
-/// Содержимое `<snap>/.mctui-snapshot.json`.
+/// Содержимое `<snap>/.pechka-snapshot.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotMeta {
     pub files: u64,
@@ -262,11 +262,11 @@ pub(crate) fn link_warning(e: &str) -> String {
     )
 }
 
-/// Сколько копий «мира до восстановления» хранить в `.mctui-before-restore/`.
+/// Сколько копий «мира до восстановления» хранить в `.pechka-before-restore/`.
 const KEEP_BEFORE_RESTORE: usize = 3;
 
 /// Восстановление из архива `.tar.gz` или из снимка `.snap/` (сервер должен быть остановлен). Текущие
-/// `paths` не удаляются, а переносятся в `<root>/.mctui-before-restore/<время>/` (хранятся последние 3).
+/// `paths` не удаляются, а переносятся в `<root>/.pechka-before-restore/<время>/` (хранятся последние 3).
 /// Возвращает эту папку.
 pub fn restore(root: &Path, backup: &Path, paths: &[String], mut progress: impl FnMut(String)) -> Result<PathBuf> {
     if backup.is_dir() {
@@ -304,9 +304,9 @@ pub fn restore(root: &Path, backup: &Path, paths: &[String], mut progress: impl 
     Ok(stash)
 }
 
-/// Переносит текущие `paths` в `<root>/.mctui-before-restore/<время>/`.
+/// Переносит текущие `paths` в `<root>/.pechka-before-restore/<время>/`.
 fn stash_current(root: &Path, paths: &[String]) -> Result<PathBuf> {
-    let stash = root.join(".mctui-before-restore").join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
+    let stash = root.join(".pechka-before-restore").join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
     std::fs::create_dir_all(&stash).with_context(|| stash.display().to_string())?;
     for p in paths {
         let src = root.join(p);
@@ -322,7 +322,7 @@ fn stash_current(root: &Path, paths: &[String]) -> Result<PathBuf> {
 }
 
 fn rotate_stash(root: &Path) {
-    if let Ok(rd) = std::fs::read_dir(root.join(".mctui-before-restore")) {
+    if let Ok(rd) = std::fs::read_dir(root.join(".pechka-before-restore")) {
         let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
         dirs.sort();
         while dirs.len() > KEEP_BEFORE_RESTORE {
@@ -764,7 +764,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-test-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -836,7 +836,7 @@ pub(crate) mod tests {
 
     #[test]
     fn restore_moves_current_world_aside() {
-        let root = std::env::temp_dir().join(format!("mctui-restore-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("pechka-restore-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("world/region")).unwrap();
         std::fs::write(root.join("world/level.dat"), b"old-good").unwrap();

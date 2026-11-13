@@ -1118,7 +1118,7 @@ pub(crate) fn install_with(
 
     // Без расширения .jar — сервер не подхватит недокачанный файл.
     let tmps: Vec<PathBuf> =
-        (0..todo.len()).map(|i| dir.join(format!(".mctui-download-{}-{i}.part", std::process::id()))).collect();
+        (0..todo.len()).map(|i| dir.join(format!(".pechka-download-{}-{i}.part", std::process::id()))).collect();
     let cleanup = || {
         for t in &tmps {
             let _ = std::fs::remove_file(t);
@@ -1173,7 +1173,7 @@ mod tests {
     impl TempDir {
         fn new(tag: &str) -> Self {
             let d = std::env::temp_dir().join(format!(
-                "mctui-search-{tag}-{}-{}",
+                "pechka-search-{tag}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
             ));

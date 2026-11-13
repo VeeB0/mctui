@@ -32,8 +32,8 @@ jobs:
           key="$RUNNER_TEMP/minisign.key"
           ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key" )
           trap 'rm -f "$key"' EXIT
-          f="$RUNNER_TEMP/mctui-signing-check"
+          f="$RUNNER_TEMP/pechka-signing-check"
           echo "signing check ${GITHUB_SHA}" > "$f"
-          minisign -S -s "$key" -m "$f" -t "mctui v0.0.0 mctui-signing-check" < /dev/null
+          minisign -S -s "$key" -m "$f" -t "pechka v0.0.0 pechka-signing-check" < /dev/null
           minisign -V -H -p packaging/minisign.pub -m "$f"
           echo "::notice::MINISIGN_SECRET_KEY matches packaging/minisign.pub"

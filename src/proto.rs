@@ -1,4 +1,4 @@
-//! Протокол между фоновой службой (`mctui daemon`) и окном TUI.
+//! Протокол между фоновой службой (`pechka daemon`) и окном TUI.
 //!
 //! Транспорт — TCP на 127.0.0.1, по одному JSON-объекту на строку. Порт и случайный токен служба
 //! пишет в `daemon.json` рядом с servers.toml (доступен только владельцу); первым сообщением
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn endpoint_is_next_to_config() {
-        let p = endpoint_path(Path::new("/home/u/.config/mctui/servers.toml"));
-        assert_eq!(p, Path::new("/home/u/.config/mctui/daemon.json"));
+        let p = endpoint_path(Path::new("/home/u/.config/pechka/servers.toml"));
+        assert_eq!(p, Path::new("/home/u/.config/pechka/daemon.json"));
     }
 }

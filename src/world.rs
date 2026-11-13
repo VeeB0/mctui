@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 /// Папка для измерений, отложенных при сбросе (внутри папки сервера).
-pub const RESET_STASH_DIR: &str = ".mctui-before-reset";
+pub const RESET_STASH_DIR: &str = ".pechka-before-reset";
 /// Сколько отложенных сбросов хранить.
 const KEEP_BEFORE_RESET: usize = 3;
 
@@ -321,7 +321,7 @@ fn reset_candidates(dir: &Path, level_name: &str, dim: &Dimension) -> Vec<PathBu
 }
 
 /// Сброс Незера или Энда (сервер должен быть остановлен — это обеспечивает вызывающий): папки измерения
-/// не удаляются, а переносятся в `<dir>/.mctui-before-reset/<время>/…` с сохранением относительного пути
+/// не удаляются, а переносятся в `<dir>/.pechka-before-reset/<время>/…` с сохранением относительного пути
 /// (хранятся последние 3 сброса). Файлы настроек измерения (`paper-world.yml`) возвращаются на место.
 /// При следующем запуске сервер создаст измерение заново с тем же сидом. Возвращает папку копии.
 pub fn reset_dimension(dir: &Path, level_name: &str, dim: Dimension) -> Result<PathBuf> {
@@ -802,7 +802,7 @@ mod tests {
     use std::io::Write;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-world-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-world-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

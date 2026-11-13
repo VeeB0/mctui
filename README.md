@@ -1,52 +1,61 @@
-# mctui — TUI для серверов Minecraft
+# pechka — TUI для серверов Minecraft
 
-Один терминальный интерфейс для локальных серверов (mctui сам запускает процесс) и удалённых (по RCON).
+Один терминальный интерфейс для локальных серверов (pechka сама запускает процесс) и удалённых (по RCON).
 
 ## Установка
 
 **macOS / Linux** (Apple Silicon и Intel, x86_64 и arm64):
 ```bash
-curl -fsSL https://github.com/VeeB0/mctui/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/VeeB0/pechka/releases/latest/download/install.sh | sh
 ```
 
 **Homebrew (macOS / Linux):**
 ```bash
-brew install VeeB0/mctui/mctui
+brew install VeeB0/pechka/pechka
 ```
-Обновление — `brew upgrade mctui` или `Ctrl+U` в окне (не `mctui update`: бинарником управляет brew).
+Обновление — `brew upgrade pechka` или `Ctrl+U` в окне (не `pechka update`: бинарником управляет brew).
 
 **Windows 10 / 11** (PowerShell):
 ```powershell
-irm https://github.com/VeeB0/mctui/releases/latest/download/install.ps1 | iex
+irm https://github.com/VeeB0/pechka/releases/latest/download/install.ps1 | iex
 ```
 
-Программа ставится в `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\mctui`) и добавляется в `PATH`.
+Программа ставится в `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\pechka`) и добавляется в `PATH`.
 После этого в новом окне терминала достаточно набрать:
 ```bash
-mctui
+pechka
 ```
+
+## Раньше программа называлась mctui
+С версии 0.7 программа называется **pechka**. Обновление со старой версии (`Ctrl+U`, `mctui update`,
+повторный запуск установщика или `brew upgrade`) переносит всё само:
+- файл программы становится `pechka`, а команда `mctui` остаётся синонимом;
+- настройки переезжают из `~/.config/mctui` в `~/.config/pechka`, на старом месте остаётся ссылка
+  (на Windows настройки остаются в `%APPDATA%\mctui`);
+- автозапуск со старым именем снимается и ставится заново под новым; серверы при этом не останавливаются;
+- переменные окружения `MCTUI_*` по-прежнему работают, если не заданы `PECHKA_*`.
 
 ## Обновление
 ```bash
-mctui update
+pechka update
 ```
 Скачивает последний релиз, проверяет подпись и SHA-256 и заменяет программу. Настройки не трогаются, серверы продолжают работать.
 
 Каждая сборка в релизе подписана [minisign](https://jedisct1.github.io/minisign/) (`<файл>.minisig`), открытый ключ
-вшит в mctui и лежит в [`packaging/minisign.pub`](packaging/minisign.pub): без верной подписи `mctui update` и `Ctrl+U`
+вшит в pechka и лежит в [`packaging/minisign.pub`](packaging/minisign.pub): без верной подписи `pechka update` и `Ctrl+U`
 программу не заменяют. Проверить скачанный файл вручную:
 ```bash
-minisign -Vm mctui-aarch64-apple-darwin -P RWRdCohV0uDu+nHDc3eszcW334lUsh0WwIH+OLPIJe1Z6sYEmFyuXuXM
+minisign -Vm pechka-aarch64-apple-darwin -P RWRdCohV0uDu+nHDc3eszcW334lUsh0WwIH+OLPIJe1Z6sYEmFyuXuXM
 ```
-Когда выходит новая версия, mctui показывает в шапке значок `⬆ vX.Y.Z`: `Ctrl+U` (или клик по значку) обновляет
+Когда выходит новая версия, pechka показывает в шапке значок `⬆ vX.Y.Z`: `Ctrl+U` (или клик по значку) обновляет
 прямо из окна и открывает его заново. Повторный запуск установщика тоже обновляет.
 
 ## Первый запуск и настройки
-При первом запуске mctui предлагает три варианта:
+При первом запуске pechka предлагает три варианта:
 - **Локальный** — вставьте путь к папке сервера (`Cmd+V` / `Ctrl+V` или перетащите папку в окно терминала);
-  mctui сам найдёт скрипт запуска (`start.sh`, `run.bat`…) или `.jar`, встроенную Java, порт и мир.
+  pechka сама найдёт скрипт запуска (`start.sh`, `run.bat`…) или `.jar`, встроенную Java, порт и мир.
 - **Создать новый** — сервер с нуля: ядро **Paper / Purpur / Fabric / Vanilla** или прокси **Velocity**,
-  версия (←→, PgUp/PgDn), папка, память (`4G`), порт и галочка EULA. mctui скачает ядро и при необходимости
+  версия (←→, PgUp/PgDn), папка, память (`4G`), порт и галочка EULA. pechka скачает ядро и при необходимости
   Java (Adoptium), примет EULA и напишет `start.sh` / `start.bat`.
 - **RCON** — подключение к уже работающему серверу.
 
@@ -56,15 +65,15 @@ minisign -Vm mctui-aarch64-apple-darwin -P RWRdCohV0uDu+nHDc3eszcW334lUsh0WwIH+O
 
 | Система | Файл |
 |---|---|
-| macOS, Linux | `~/.config/mctui/servers.toml` |
-| Windows | `%APPDATA%\mctui\servers.toml` |
+| macOS, Linux | `~/.config/pechka/servers.toml` |
+| Windows | `%APPDATA%\pechka\servers.toml` |
 
 Его можно править руками (все поля — в [`servers.example.toml`](servers.example.toml)), указать другой файл —
-`mctui --config путь` или переменная `MCTUI_CONFIG`.
+`pechka --config путь` или переменная `PECHKA_CONFIG`.
 
 ## Фоновая служба
-Серверы работают в фоновой службе `mctui daemon`, окно — только интерфейс к ней:
-- `Ctrl+Q` закрывает окно, **серверы продолжают работать**; при следующем `mctui` окно подключается обратно
+Серверы работают в фоновой службе `pechka daemon`, окно — только интерфейс к ней:
+- `Ctrl+Q` закрывает окно, **серверы продолжают работать**; при следующем `pechka` окно подключается обратно
   (с логами и графиками). В меню выхода `s` — остановить все серверы и выйти.
 - Служба ставится в автозапуск при входе в систему (macOS — LaunchAgent, Linux — systemd `--user`,
   Windows — ключ `Run`) и поднимает серверы с `autostart = true`.
@@ -72,17 +81,17 @@ minisign -Vm mctui-aarch64-apple-darwin -P RWRdCohV0uDu+nHDc3eszcW334lUsh0WwIH+O
   новая служба подключается к нему заново.
 
 ```bash
-mctui daemon status      # что запущено
-mctui daemon stop        # остановить серверы и службу
-mctui daemon restart     # перезапустить службу; серверы продолжают работать
-mctui autostart off      # убрать из автозапуска (on — вернуть)
+pechka daemon status      # что запущено
+pechka daemon stop        # остановить серверы и службу
+pechka daemon restart     # перезапустить службу; серверы продолжают работать
+pechka autostart off      # убрать из автозапуска (on — вернуть)
 ```
 
 ## Сборка из исходников
 ```bash
-cargo install --git https://github.com/VeeB0/mctui
+cargo install --git https://github.com/VeeB0/pechka
 # или
-cargo build --release && ./target/release/mctui
+cargo build --release && ./target/release/pechka
 ```
 
 ## Экран
@@ -99,10 +108,10 @@ cargo build --release && ./target/release/mctui
   если остановлен — правятся файлы `whitelist.json` / `ops.json` / `banned-*.json`.
 - **Плагины** — содержимое `plugins/` или `mods/`: включение/выключение (`.jar` ↔ `.jar.disabled`),
   обновления через Modrinth (по хешу файла), `i` — поиск и установка с Modrinth и Hangar.
-- **Настройки** — параметры mctui (автозапуск, авто-рестарт, уведомления, бэкапы, расписание рестартов, язык)
+- **Настройки** — параметры pechka (автозапуск, авто-рестарт, уведомления, бэкапы, расписание рестартов, язык)
   и `server.properties` с описанием каждого параметра и проверкой значения.
 - **Бэкапы** — у новых серверов авто-бэкап раз в 6 часов сразу включён; «Статус» показывает, когда был
-  последний бэкап, и предупреждает, если бэкапов нет. Создание, восстановление (текущий мир сначала откладывается в `.mctui-before-restore/`), удаление.
+  последний бэкап, и предупреждает, если бэкапов нет. Создание, восстановление (текущий мир сначала откладывается в `.pechka-before-restore/`), удаление.
   Полные (`.tar.gz`) или инкрементальные (снимки), с копией в другую папку или облако (rclone).
 - **Мир** — размеры измерений, сброс Незера / Энда, смена основного мира, генерация чанков через Chunky.
 - Логи на главном экране не показываются: кнопка **«L · Логи»** в правом верхнем углу (клик мышью или `L` / `Ctrl+L`)
@@ -112,7 +121,7 @@ cargo build --release && ./target/release/mctui
 ## Клавиши
 | Где | Клавиши |
 |---|---|
-| Везде | `?` / `F1` справка по клавишам · `Ctrl+S` старт · `Ctrl+X` стоп · `Ctrl+R` рестарт · `Ctrl+B` бэкап · `Ctrl+L` логи · `Ctrl+U` обновить mctui · `Ctrl+Q` выход |
+| Везде | `?` / `F1` справка по клавишам · `Ctrl+S` старт · `Ctrl+X` стоп · `Ctrl+R` рестарт · `Ctrl+B` бэкап · `Ctrl+L` логи · `Ctrl+U` обновить pechka · `Ctrl+Q` выход |
 | Главный экран | `↑↓` сервер · `a` добавить сервер · `Del` убрать · `Tab` фокус · `1–7` вкладки · `Enter`/`:` ввод команды · `L` логи · `f` как друзьям зайти |
 | Ввод команды | `Enter` отправить · `Tab` дополнить команду / ник · `↑↓` история · `Esc` выйти |
 | Статус | `U` обновить ядро · `T` тестовая копия · `J` Java и память · `v` сеть Velocity (у прокси) · `f` как друзьям зайти |
@@ -130,14 +139,14 @@ cargo build --release && ./target/release/mctui
 
 ## Как это устроено
 - **Локальный сервер**: процесс из `command` в папке `dir`, команды — через stdin. Процесс запускает и держит
-  хранитель (`mctui __keeper`, своя группа процессов), служба общается с ним по локальному сокету с токеном —
+  хранитель (`pechka __keeper`, своя группа процессов), служба общается с ним по локальному сокету с токеном —
   поэтому перезапуск службы сервер не задевает. Остановка — `stop`, через `stop_timeout_secs` — kill. При падении — авто-рестарт; после 3 падений за 5 минут он приостанавливается.
 - **TPS и игроки** берутся по RCON (опрос `list`/`tps` раз в 10 с). Для локального сервера RCON включается
   на вкладке «Настройки» клавишей `r` (случайный пароль, `broadcast-rcon-to-ops=false`). Без RCON игроки
   считаются по строкам лога «joined/left the game».
 - **Бэкап**: `save-off` → `save-all flush` → ожидание «Saved the game» → `.tar.gz` (или снимок) из `backup_paths`
   → `save-on`. Хранятся последние `backup_keep` бэкапов; `backup_copy_to` — куда ещё скопировать каждый.
-- **Обновление ядра**: старый jar → `.mctui-old/`, в скрипте запуска меняется только имя jar (и Java, если новой
+- **Обновление ядра**: старый jar → `.pechka-old/`, в скрипте запуска меняется только имя jar (и Java, если новой
   версии нужна новее). Перед переходом на новую версию Minecraft — полный бэкап; откат на старую версию запрещён.
 - **Расписание**: `backup_every_hours` — авто-бэкап каждые N часов, пока сервер работает;
   `restart_times = ["05:00"]` — ежедневный рестарт с предупреждениями игрокам в чат за 15, 5 и 1 минуту и
@@ -145,10 +154,10 @@ cargo build --release && ./target/release/mctui
 
 ## Язык / Language
 Интерфейс на русском или английском — по языку системы. Сменить: вкладка «Настройки» → «Язык»,
-поле `language = "en"` в `servers.toml` или переменная `MCTUI_LANG=en`.
+поле `language = "en"` в `servers.toml` или переменная `PECHKA_LANG=en`.
 
 The UI is available in English: it follows the system language, or set `language = "en"` in `servers.toml`
-(Settings tab → Language) or `MCTUI_LANG=en`.
+(Settings tab → Language) or `PECHKA_LANG=en`.
 
 ## Разработка
 ```bash
@@ -156,4 +165,4 @@ cargo test
 ```
 Релиз: перенести пункты из `## [Unreleased]` в `CHANGELOG.md` в раздел `## [X.Y.Z] — дата`, поднять
 `version` в `Cargo.toml`, затем `git tag vX.Y.Z && git push origin main vX.Y.Z` — GitHub Actions
-соберёт бинарники для всех платформ, опубликует их в Releases (описание — из `CHANGELOG.md`) и обновит формулу в `VeeB0/homebrew-mctui`.
+соберёт бинарники для всех платформ, опубликует их в Releases (описание — из `CHANGELOG.md`) и обновит формулу в `VeeB0/homebrew-pechka`.

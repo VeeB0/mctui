@@ -60,13 +60,13 @@ pub fn draw(app: &App, f: &mut Frame) {
 fn draw_connecting(app: &App, f: &mut Frame) {
     let area = f.area();
     let mut lines = vec![
-        Line::styled(" mctui", Style::new().fg(theme::ACCENT).bold()),
+        Line::styled(" pechka", Style::new().fg(theme::ACCENT).bold()),
         Line::raw(""),
         Line::styled(
             if app.connected {
                 tr!(" Загрузка…", " Loading…")
             } else {
-                tr!(" Подключение к фоновой службе mctui…", " Connecting to the mctui background service…")
+                tr!(" Подключение к фоновой службе pechka…", " Connecting to the pechka background service…")
             },
             Style::new().fg(theme::TEXT),
         ),
@@ -98,7 +98,7 @@ pub fn draw_toast(app: &App, f: &mut Frame, area: Rect) {
 fn draw_header(app: &App, f: &mut Frame, area: Rect, btn: Rect) {
     let s = app.sel();
     let mut left = vec![
-        Span::styled(" mctui ", Style::new().fg(theme::ACCENT).bold()),
+        Span::styled(" pechka ", Style::new().fg(theme::ACCENT).bold()),
         Span::styled("│ ", Style::new().fg(theme::BORDER)),
         Span::styled(s.cfg.name.clone(), Style::new().fg(theme::TEXT).bold()),
         Span::raw(" "),
@@ -118,7 +118,7 @@ fn draw_header(app: &App, f: &mut Frame, area: Rect, btn: Rect) {
     let badge = if app.daemon_outdated {
         app.daemon_version.as_ref().map(|v| {
             (
-                tr!(format!(" служба v{v}: mctui daemon restart "), format!(" service v{v}: mctui daemon restart ")),
+                tr!(format!(" служба v{v}: pechka daemon restart "), format!(" service v{v}: pechka daemon restart ")),
                 theme::WARN,
             )
         })
@@ -706,7 +706,7 @@ fn draw_settings(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         .into_iter()
         .map(|o| {
             Row::new(vec![
-                Span::styled(format!("mctui · {}", o.label()), Style::new().fg(theme::ACCENT)),
+                Span::styled(format!("pechka · {}", o.label()), Style::new().fg(theme::ACCENT)),
                 Span::styled(app.opt_value(o), Style::new().fg(theme::TEXT)),
             ])
         })
@@ -774,7 +774,7 @@ fn draw_settings(app: &App, f: &mut Frame, area: Rect, focused: bool) {
             None => Line::styled(tr!("нет описания", "no description"), Style::new().fg(theme::MUTED)),
         },
         Some(Ok(_)) => Line::styled(
-            tr!("Настройка mctui (хранится в servers.toml)", "mctui setting (stored in servers.toml)"),
+            tr!("Настройка pechka (хранится в servers.toml)", "pechka setting (stored in servers.toml)"),
             Style::new().fg(theme::MUTED),
         ),
         None => Line::raw(""),

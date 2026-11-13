@@ -1,9 +1,9 @@
-# Где лежит: ~/.config/mctui/servers.toml (Windows: %APPDATA%\mctui\servers.toml),
-# или --config <путь> / переменная MCTUI_CONFIG. Обычно его заполняет экран «Добавить сервер» (клавиша a).
+# Где лежит: ~/.config/pechka/servers.toml (Windows: %APPDATA%\pechka\servers.toml),
+# или --config <путь> / переменная PECHKA_CONFIG. Обычно его заполняет экран «Добавить сервер» (клавиша a).
 
 # language = "en"                 # язык интерфейса: "ru" / "en" (по умолчанию — язык системы)
 
-# ── Локальный сервер: mctui сам запускает процесс ──
+# ── Локальный сервер: pechka сама запускает процесс ──
 [[server]]
 name = "Survival"
 kind = "local"
@@ -31,6 +31,6 @@ name = "Remote"
 kind = "rcon"
 host = "mc.example.org"
 port = 25575
-password_env = "MCTUI_REMOTE_PASS" # пароль из переменной окружения…
+password_env = "PECHKA_REMOTE_PASS" # пароль из переменной окружения…
 # password = "..."                 # …или прямо в файле
 # log_path = "/srv/mc/logs/latest.log"  # если сервер на этой же машине — лог будет виден в «Логах»

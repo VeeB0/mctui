@@ -10,7 +10,7 @@
 //!   с фильтром по версии игры.
 //!
 //! [`install`] скачивает найденные сборки, проверяет контрольные суммы и заменяет jar; старый уходит в
-//! `<plugins|mods>/.mctui-old/` (как в `plugins.rs`). Vanilla — пустой отчёт; Velocity — версии прокси не
+//! `<plugins|mods>/.pechka-old/` (как в `plugins.rs`). Vanilla — пустой отчёт; Velocity — версии прокси не
 //! версии Minecraft, все плагины помечаются «неизвестно» с пояснением.
 //!
 //! Все функции блокирующие (системный `curl`): вызывать через `spawn_blocking`.
@@ -583,7 +583,7 @@ fn hangar_compat(http: &dyn Http, plugin: &PluginInfo, target: &str) -> Result<(
 
 /// Ставит сборки из [`Compat::Ready`] с [`Update`] (остальные пункты пропускаются). Каждый файл — отдельно
 /// и атомарно: скачивание во временный `.part` в той же папке, проверка размера, хэша (sha512 / sha256 /
-/// sha1) и того, что это jar; затем старый jar уходит в `<plugins|mods>/.mctui-old/` (под свободным именем),
+/// sha1) и того, что это jar; затем старый jar уходит в `<plugins|mods>/.pechka-old/` (под свободным именем),
 /// а новый встаёт рядом с тем местом, где был старый. Ошибка одного файла не мешает остальным и попадает
 /// в заметки; `Err` — если не удалось ни одного. Возвращает заметки на языке интерфейса.
 /// Сервер должен быть остановлен; новое начинает работать после запуска.
@@ -665,7 +665,7 @@ fn replace_one(
     }
 
     // Без расширения .jar — сервер не подхватит недокачанный файл.
-    let tmp = folder.join(format!(".mctui-download-{}-{seq}.part", std::process::id()));
+    let tmp = folder.join(format!(".pechka-download-{}-{seq}.part", std::process::id()));
     let res = (|| -> Result<()> {
         fetch(&u.url, &tmp)?;
         verify(u, &tmp)?;
@@ -747,7 +747,7 @@ mod tests {
     impl TempDir {
         fn new(tag: &str) -> Self {
             let d = std::env::temp_dir().join(format!(
-                "mctui-compat-{tag}-{}-{}",
+                "pechka-compat-{tag}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
             ));
@@ -1076,7 +1076,7 @@ mod tests {
         std::fs::create_dir_all(plugins_dir.join(plugins::OLD_DIR)).unwrap();
         let old = plugins_dir.join("Foo-1.0.jar");
         std::fs::write(&old, jar_bytes(&[("plugin.yml", "name: Foo\nversion: 1.0\n")])).unwrap();
-        // Имя в .mctui-old уже занято — старый файл не должен его затереть.
+        // Имя в .pechka-old уже занято — старый файл не должен его затереть.
         std::fs::write(plugins_dir.join(plugins::OLD_DIR).join("Foo-1.0.jar"), b"older").unwrap();
         let bar = plugins_dir.join("Bar.jar");
         std::fs::write(&bar, b"bar").unwrap();

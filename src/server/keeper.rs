@@ -1,6 +1,6 @@
-//! Хранитель процесса сервера (`mctui __keeper <spec>`): отдельный маленький процесс, который запускает
+//! Хранитель процесса сервера (`pechka __keeper <spec>`): отдельный маленький процесс, который запускает
 //! сервер и держит его stdin/stdout. Служба подключается к нему по TCP 127.0.0.1 с токеном, поэтому её
-//! можно перезапустить (в том числе на новой версии mctui), не останавливая сервер: новая служба находит
+//! можно перезапустить (в том числе на новой версии pechka), не останавливая сервер: новая служба находит
 //! файл состояния в `<state_dir>/run/` и подключается заново, получая хвост лога.
 //!
 //! Протокол — JSON-строки:
@@ -149,7 +149,7 @@ struct Shared {
     writer: Option<tokio::task::JoinHandle<bool>>,
 }
 
-/// Точка входа `mctui __keeper <spec>`.
+/// Точка входа `pechka __keeper <spec>`.
 pub async fn run(spec_path: &Path) -> i32 {
     let spec: Spec = match std::fs::read_to_string(spec_path)
         .map_err(anyhow::Error::from)
@@ -157,7 +157,7 @@ pub async fn run(spec_path: &Path) -> i32 {
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("mctui keeper: {}: {e:#}", spec_path.display());
+            eprintln!("pechka keeper: {}: {e:#}", spec_path.display());
             return 2;
         }
     };

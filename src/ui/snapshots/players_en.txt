@@ -1,4 +1,4 @@
- mctui │ Survival ● running                                                                                   L · Logs
+ pechka │ Survival ● running                                                                                  L · Logs
 ┌ Servers ───────────────┐ 1 Status │ 2 Players │ 3 Access │ 4 Plugins │ 5 Settings │ 6 Backups │ 7 World
 │● Survival 2👤           │┌ Players (2) ───────────────────────────────────────────────────────────────────────────────┐
 │                        ││▶  Alex                                                                                  Op │

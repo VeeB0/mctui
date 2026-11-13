@@ -490,7 +490,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_file_name(format!(".{}.mctui-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
+    let tmp = path.with_file_name(format!(".{}.pechka-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path).with_context(|| {
         tr!(format!("не удалось записать {}", path.display()), format!("cannot write {}", path.display()))
@@ -883,7 +883,7 @@ mod tests {
     struct TempDir(PathBuf);
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let d = std::env::temp_dir().join(format!("mctui-velocity-{tag}-{}", std::process::id()));
+            let d = std::env::temp_dir().join(format!("pechka-velocity-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
             Self(d)

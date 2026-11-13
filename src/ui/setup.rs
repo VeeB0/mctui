@@ -85,7 +85,7 @@ pub fn draw(app: &App, f: &mut Frame) {
     let panel = layout::setup_panel(area);
     f.render_widget(Clear, panel);
     let title = if s.first_run {
-        tr!(" Добро пожаловать в mctui ", " Welcome to mctui ")
+        tr!(" Добро пожаловать в pechka ", " Welcome to pechka ")
     } else {
         tr!(" Добавить сервер ", " Add a server ")
     };
@@ -98,12 +98,12 @@ pub fn draw(app: &App, f: &mut Frame) {
 
     let intro = match s.kind {
         SetupKind::Local => tr!(
-            "Вставьте путь к папке сервера Minecraft (Cmd+V / Ctrl+V или перетащите папку в окно терминала). mctui сам найдёт, как его запускать.",
-            "Paste the path to a Minecraft server folder (Cmd+V / Ctrl+V, or drag the folder into the terminal). mctui works out how to start it."
+            "Вставьте путь к папке сервера Minecraft (Cmd+V / Ctrl+V или перетащите папку в окно терминала). pechka сама найдёт, как его запускать.",
+            "Paste the path to a Minecraft server folder (Cmd+V / Ctrl+V, or drag the folder into the terminal). pechka works out how to start it."
         ),
         SetupKind::New => tr!(
-            "Новый сервер с нуля: mctui скачает ядро и, если нужно, Java, примет EULA и создаст скрипт запуска.",
-            "A new server from scratch: mctui downloads the core and Java if needed, accepts the EULA and writes a start script."
+            "Новый сервер с нуля: pechka скачает ядро и, если нужно, Java, примет EULA и создаст скрипт запуска.",
+            "A new server from scratch: pechka downloads the core and Java if needed, accepts the EULA and writes a start script."
         ),
         SetupKind::Rcon => tr!(
             "Подключение к уже работающему серверу по RCON (в его server.properties: enable-rcon=true).",

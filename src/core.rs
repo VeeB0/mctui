@@ -43,7 +43,7 @@ pub struct Manager {
     pub language: Option<String>,
     /// Идёт остановка всех серверов перед выходом службы.
     pub quitting: bool,
-    /// Служба уходит, оставляя серверы работать (перезапуск службы / обновление mctui).
+    /// Служба уходит, оставляя серверы работать (перезапуск службы / обновление pechka).
     pub detaching: bool,
     pub should_exit: bool,
     pub out: Outbox,
@@ -217,8 +217,8 @@ impl Manager {
                 self.log(
                     i,
                     &tr!(
-                        format!("mctui: сервер завершился, пока служба не работала ({status})"),
-                        format!("mctui: the server exited while the service was down ({status})")
+                        format!("pechka: сервер завершился, пока служба не работала ({status})"),
+                        format!("pechka: the server exited while the service was down ({status})")
                     ),
                 );
                 false
@@ -263,16 +263,16 @@ impl Manager {
                 self.log(
                     i,
                     &tr!(
-                        format!("──────── mctui: служба подключилась к работающему серверу (pid {pid}) ────────"),
-                        format!("──────── mctui: the service reattached to the running server (pid {pid}) ────────")
+                        format!("──────── pechka: служба подключилась к работающему серверу (pid {pid}) ────────"),
+                        format!("──────── pechka: the service reattached to the running server (pid {pid}) ────────")
                     ),
                 );
                 if resume_saving {
                     self.log(
                         i,
                         tr!(
-                            "mctui: прошлая служба прервалась посреди бэкапа — автосохранение мира включено снова (save-on)",
-                            "mctui: the previous service stopped in the middle of a backup — world autosave is back on (save-on)"
+                            "pechka: прошлая служба прервалась посреди бэкапа — автосохранение мира включено снова (save-on)",
+                            "pechka: the previous service stopped in the middle of a backup — world autosave is back on (save-on)"
                         ),
                     );
                 }
@@ -374,8 +374,8 @@ impl Manager {
         match LocalProc::spawn(s.id, &s.cfg, &run_dir, self.tx.clone()) {
             Ok(p) => {
                 let line = tr!(
-                    format!("──────── mctui: запуск {} (pid {}) ────────", s.cfg.command.join(" "), p.pid),
-                    format!("──────── mctui: starting {} (pid {}) ────────", s.cfg.command.join(" "), p.pid)
+                    format!("──────── pechka: запуск {} (pid {}) ────────", s.cfg.command.join(" "), p.pid),
+                    format!("──────── pechka: starting {} (pid {}) ────────", s.cfg.command.join(" "), p.pid)
                 );
                 s.proc = Some(p);
                 s.status = Status::Starting;
@@ -395,7 +395,7 @@ impl Manager {
             Err(e) => {
                 s.status = Status::Crashed;
                 let msg = format!("{e:#}");
-                self.log(idx, &format!("mctui: {msg}"));
+                self.log(idx, &format!("pechka: {msg}"));
                 self.notice(msg, NoticeKind::Error);
             }
         }
@@ -508,7 +508,10 @@ impl Manager {
             s.pending_restore = Some((path, true));
             s.restart_at = None;
             let name = s.cfg.name.clone();
-            self.log(idx, tr!("mctui: остановка для восстановления из бэкапа", "mctui: stopping to restore a backup"));
+            self.log(
+                idx,
+                tr!("pechka: остановка для восстановления из бэкапа", "pechka: stopping to restore a backup"),
+            );
             self.stop(idx, false);
             self.notice(
                 tr!(
@@ -806,8 +809,8 @@ impl Manager {
         self.log(
             idx,
             &tr!(
-                format!("──────── mctui: процесс завершился ({status}) ────────"),
-                format!("──────── mctui: process exited ({status}) ────────")
+                format!("──────── pechka: процесс завершился ({status}) ────────"),
+                format!("──────── pechka: process exited ({status}) ────────")
             ),
         );
         if let Some((path, start_after)) = pending {
@@ -853,8 +856,8 @@ impl Manager {
                         self.log(
                             idx,
                             tr!(
-                                "mctui: 3 падения за 5 минут — авто-рестарт приостановлен",
-                                "mctui: 3 crashes in 5 minutes — auto-restart paused"
+                                "pechka: 3 падения за 5 минут — авто-рестарт приостановлен",
+                                "pechka: 3 crashes in 5 minutes — auto-restart paused"
                             ),
                         );
                         self.notice(
@@ -999,8 +1002,8 @@ impl Manager {
                 self.log(
                     idx,
                     &tr!(
-                        format!("mctui: мир восстановлен из бэкапа; прежний сохранён в {stash}"),
-                        format!("mctui: world restored from backup; the previous one is kept in {stash}")
+                        format!("pechka: мир восстановлен из бэкапа; прежний сохранён в {stash}"),
+                        format!("pechka: world restored from backup; the previous one is kept in {stash}")
                     ),
                 );
                 self.notice(
@@ -1018,7 +1021,7 @@ impl Manager {
                 s.restoring = false;
                 s.backup_progress = None;
                 s.restart_after_stop = false;
-                self.log(idx, &format!("mctui: restore: {e}"));
+                self.log(idx, &format!("pechka: restore: {e}"));
                 self.notice(
                     tr!(format!("восстановление не удалось: {e}"), format!("restore failed: {e}")),
                     NoticeKind::Error,
@@ -1055,14 +1058,14 @@ impl Manager {
         {
             s.next_backup = Some(now + chrono::Duration::hours(s.cfg.backup_every_hours.max(1) as i64));
             if s.played_since_backup || s.last_backup.is_none() {
-                self.log(idx, tr!("mctui: авто-бэкап по расписанию", "mctui: scheduled backup"));
+                self.log(idx, tr!("pechka: авто-бэкап по расписанию", "pechka: scheduled backup"));
                 self.backup(idx, true);
             } else {
                 self.log(
                     idx,
                     tr!(
-                        "mctui: авто-бэкап пропущен — с прошлого бэкапа никто не играл",
-                        "mctui: scheduled backup skipped — nobody played since the last one"
+                        "pechka: авто-бэкап пропущен — с прошлого бэкапа никто не играл",
+                        "pechka: scheduled backup skipped — nobody played since the last one"
                     ),
                 );
             }
@@ -1073,7 +1076,7 @@ impl Manager {
         if left <= 0 {
             s.next_restart = None;
             s.restart_warned.clear();
-            self.log(idx, tr!("mctui: рестарт по расписанию", "mctui: scheduled restart"));
+            self.log(idx, tr!("pechka: рестарт по расписанию", "pechka: scheduled restart"));
             self.stop(idx, true);
             return;
         }
@@ -1112,8 +1115,8 @@ impl Manager {
                 self.log(
                     i,
                     tr!(
-                        "mctui: сервер не остановился за отведённое время — kill",
-                        "mctui: server did not stop in time — killing"
+                        "pechka: сервер не остановился за отведённое время — kill",
+                        "pechka: server did not stop in time — killing"
                     ),
                 );
             }
@@ -1196,7 +1199,7 @@ impl Manager {
         match change {
             Change::Raised(k) => {
                 let text = k.text();
-                self.log(i, &format!("mctui: ⚠ {text}"));
+                self.log(i, &format!("pechka: ⚠ {text}"));
                 self.notice(format!("{name}: {text}"), NoticeKind::Error);
                 if self.servers[i].alerts.should_notify(k, Instant::now()) {
                     self.desktop(i, &text);
@@ -1204,7 +1207,7 @@ impl Manager {
             }
             Change::Cleared(k) => {
                 let text = k.text();
-                self.log(i, &tr!(format!("mctui: ✓ прошло: {text}"), format!("mctui: ✓ cleared: {text}")));
+                self.log(i, &tr!(format!("pechka: ✓ прошло: {text}"), format!("pechka: ✓ cleared: {text}")));
             }
         }
     }
@@ -1212,8 +1215,8 @@ impl Manager {
     /// Уведомление рабочего стола от имени сервера (если `notify` включён).
     fn desktop(&self, i: usize, body: &str) {
         let s = &self.servers[i];
-        if s.cfg.notify && std::env::var_os("MCTUI_NO_NOTIFY").is_none() {
-            crate::alerts::desktop(&format!("mctui · {}", s.cfg.name), body);
+        if s.cfg.notify && crate::legacy::env_os("NO_NOTIFY").is_none() {
+            crate::alerts::desktop(&format!("pechka · {}", s.cfg.name), body);
         }
     }
 
@@ -1270,7 +1273,7 @@ impl Manager {
                 log.heartbeat(Local::now());
             }
             if let Err(e) = log.save() {
-                eprintln!("mctui: sessions: {e:#}");
+                eprintln!("pechka: sessions: {e:#}");
             }
         }
     }

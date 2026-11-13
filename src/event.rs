@@ -59,7 +59,7 @@ pub enum AppEvent {
         id: usize,
         ev: RestoreEvent,
     },
-    /// Вышла новая версия mctui.
+    /// Вышла новая версия pechka.
     UpdateAvailable(String),
     /// Сообщение от фоновой службы (в окне TUI).
     Daemon(Box<crate::proto::Msg>),

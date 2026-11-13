@@ -327,7 +327,7 @@ Caused by: should.not.be.Seen
 ";
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-crash-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-crash-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("logs")).unwrap();
         std::fs::create_dir_all(d.join("crash-reports")).unwrap();

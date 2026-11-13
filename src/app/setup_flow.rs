@@ -29,8 +29,8 @@ impl App {
         self.popup = Some(Popup::Confirm {
             title: tr!("Убрать из списка", "Remove from list").into(),
             text: tr!(
-                format!("Убрать «{}» из mctui? Файлы сервера и бэкапы останутся на диске.", s.cfg.name),
-                format!("Remove “{}” from mctui? Server files and backups stay on disk.", s.cfg.name)
+                format!("Убрать «{}» из pechka? Файлы сервера и бэкапы останутся на диске.", s.cfg.name),
+                format!("Remove “{}” from pechka? Server files and backups stay on disk.", s.cfg.name)
             ),
             action: Action::RemoveServer(s.id),
         });

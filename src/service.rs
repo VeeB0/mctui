@@ -9,16 +9,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[cfg(target_os = "macos")]
-const LABEL: &str = "io.github.veeb0.mctui";
+const LABEL: &str = "io.github.veeb0.pechka";
+/// Автозапуск версий до 0.7, когда программа называлась mctui.
+#[cfg(target_os = "macos")]
+const LEGACY_LABEL: &str = "io.github.veeb0.mctui";
 
-/// Путь к программе для автозапуска. Для Homebrew — стабильная ссылка `<prefix>/bin/mctui`
+/// Путь к программе для автозапуска. Для Homebrew — стабильная ссылка `<prefix>/bin/pechka`
 /// вместо пути внутри Cellar (он меняется с каждой версией).
 pub fn exe_for_service() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let exe = exe.canonicalize().unwrap_or(exe);
     let s = exe.to_string_lossy().to_string();
-    if let Some(i) = s.find("/Cellar/mctui/") {
-        let link = PathBuf::from(format!("{}/bin/mctui", &s[..i]));
+    if let Some(i) = s.find("/Cellar/pechka/") {
+        let link = PathBuf::from(format!("{}/bin/pechka", &s[..i]));
         if link.exists() {
             return Ok(link);
         }
@@ -42,8 +45,23 @@ fn run_quiet(cmd: &mut Command) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn plist_for(label: &str) -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join("Library/LaunchAgents").join(format!("{label}.plist")))
+}
+
+#[cfg(target_os = "macos")]
 fn plist_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+    plist_for(LABEL)
+}
+
+/// У задания launchd сейчас есть процесс? (`launchctl print` пишет `pid = N`.)
+#[cfg(target_os = "macos")]
+fn launchd_running(label: &str) -> bool {
+    Command::new("launchctl")
+        .args(["print", &format!("gui/{}/{label}", uid())])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim_start().starts_with("pid = ")))
 }
 
 #[cfg(target_os = "macos")]
@@ -61,7 +79,75 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// Автозапуск, поставленный версией до 0.7 (под именем mctui)?
+pub fn legacy_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        plist_for(LEGACY_LABEL).is_some_and(|p| p.exists())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        legacy_linux_files().iter().any(|p| p.exists())
+    }
+    #[cfg(windows)]
+    {
+        run_quiet(Command::new("reg").args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            crate::legacy::OLD_NAME,
+        ]))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        false
+    }
+}
+
+/// Снимает автозапуск версий до 0.7. Работающую старую службу не останавливает (SIGTERM от
+/// launchd/systemd остановил бы и серверы): только убирает запись, чтобы она не стартовала снова.
+pub fn remove_legacy() {
+    #[cfg(target_os = "macos")]
+    if let Some(p) = plist_for(LEGACY_LABEL).filter(|p| p.exists()) {
+        if !launchd_running(LEGACY_LABEL) {
+            let _ = run_quiet(Command::new("launchctl").args(["bootout", &format!("gui/{}/{LEGACY_LABEL}", uid())]));
+        }
+        let _ = std::fs::remove_file(p);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let [unit, desktop] = legacy_linux_files();
+        if unit.exists() {
+            // disable без --now: служба, если работает, доживает своё.
+            let _ = run_quiet(Command::new("systemctl").args(["--user", "disable", "mctui.service"]));
+            let _ = std::fs::remove_file(&unit);
+            let _ = run_quiet(Command::new("systemctl").args(["--user", "daemon-reload"]));
+        }
+        let _ = std::fs::remove_file(desktop);
+    }
+    #[cfg(windows)]
+    {
+        let _ = run_quiet(Command::new("reg").args([
+            "delete",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            crate::legacy::OLD_NAME,
+            "/f",
+        ]));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn legacy_linux_files() -> [PathBuf; 2] {
+    let d = dirs::config_dir().unwrap_or_default();
+    [d.join("systemd/user/mctui.service"), d.join("autostart/mctui.desktop")]
+}
+
 pub fn installed() -> bool {
+    legacy_installed() || installed_current()
+}
+
+fn installed_current() -> bool {
     #[cfg(target_os = "macos")]
     {
         plist_path().is_some_and(|p| p.exists())
@@ -76,7 +162,7 @@ pub fn installed() -> bool {
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "mctui",
+            "pechka",
         ]))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -87,11 +173,11 @@ pub fn installed() -> bool {
 
 #[cfg(target_os = "linux")]
 fn linux_unit() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("systemd/user/mctui.service"))
+    dirs::config_dir().map(|d| d.join("systemd/user/pechka.service"))
 }
 #[cfg(target_os = "linux")]
 fn linux_desktop() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("autostart/mctui.desktop"))
+    dirs::config_dir().map(|d| d.join("autostart/pechka.desktop"))
 }
 
 /// Включить автозапуск. Возвращает true, если служба уже запущена системой (иначе её надо запустить самим).
@@ -100,6 +186,7 @@ pub fn install() -> Result<bool> {
     if is_dev_build(&exe) {
         bail!(tr!("сборка из target/ — автозапуск не включается", "development build — autostart not enabled"));
     }
+    remove_legacy();
     let exe_s = exe.display().to_string();
     #[cfg(target_os = "macos")]
     {
@@ -154,18 +241,18 @@ pub fn install() -> Result<bool> {
             std::fs::write(
                 &unit,
                 format!(
-                    "[Unit]\nDescription=mctui — Minecraft servers in the background\n\n[Service]\nExecStart=\"{exe_s}\" daemon\nRestart=on-failure\nKillMode=process\nTimeoutStopSec=120\n\n[Install]\nWantedBy=default.target\n"
+                    "[Unit]\nDescription=pechka — Minecraft servers in the background\n\n[Service]\nExecStart=\"{exe_s}\" daemon\nRestart=on-failure\nKillMode=process\nTimeoutStopSec=120\n\n[Install]\nWantedBy=default.target\n"
                 ),
             )?;
             let _ = run_quiet(Command::new("systemctl").args(["--user", "daemon-reload"]));
-            return Ok(run_quiet(Command::new("systemctl").args(["--user", "enable", "--now", "mctui.service"])));
+            return Ok(run_quiet(Command::new("systemctl").args(["--user", "enable", "--now", "pechka.service"])));
         }
         let desktop = linux_desktop().context("config dir")?;
         std::fs::create_dir_all(desktop.parent().unwrap())?;
         std::fs::write(
             &desktop,
             format!(
-                "[Desktop Entry]\nType=Application\nName=mctui\nExec=\"{exe_s}\" daemon\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n"
+                "[Desktop Entry]\nType=Application\nName=pechka\nExec=\"{exe_s}\" daemon\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n"
             ),
         )?;
         Ok(false)
@@ -178,7 +265,7 @@ pub fn install() -> Result<bool> {
             "add",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "mctui",
+            "pechka",
             "/t",
             "REG_SZ",
             "/d",
@@ -197,6 +284,7 @@ pub fn install() -> Result<bool> {
 }
 
 pub fn uninstall() -> Result<()> {
+    remove_legacy();
     #[cfg(target_os = "macos")]
     {
         if let Some(p) = plist_path() {
@@ -208,7 +296,7 @@ pub fn uninstall() -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = run_quiet(Command::new("systemctl").args(["--user", "disable", "mctui.service"]));
+        let _ = run_quiet(Command::new("systemctl").args(["--user", "disable", "pechka.service"]));
         for p in [linux_unit(), linux_desktop()].into_iter().flatten() {
             if p.exists() {
                 std::fs::remove_file(p)?;
@@ -221,7 +309,7 @@ pub fn uninstall() -> Result<()> {
             "delete",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "mctui",
+            "pechka",
             "/f",
         ]));
     }
@@ -254,7 +342,7 @@ pub fn spawn_detached(config_path: &Path) -> Result<()> {
 
 /// Запуск службы: через автозапуск системы (если это основной конфиг), иначе своим процессом.
 pub fn start(config_path: &Path, default_config: bool) -> Result<()> {
-    let allow_service = default_config && std::env::var_os("MCTUI_NO_SERVICE").is_none();
+    let allow_service = default_config && crate::legacy::env_os("NO_SERVICE").is_none();
     if allow_service {
         match install() {
             Ok(true) => return Ok(()),

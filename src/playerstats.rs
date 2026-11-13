@@ -1,6 +1,6 @@
 //! Статистика игроков.
 //!
-//! 1. Из файлов сервера ([`load`]) — работает и для прошлого, даже если mctui тогда не следил за сервером:
+//! 1. Из файлов сервера ([`load`]) — работает и для прошлого, даже если pechka тогда не следил за сервером:
 //!    `usercache.json` (ник ↔ UUID), статистика vanilla `<level>/players/stats/<uuid>.json` (26.x) или
 //!    `<level>/stats/<uuid>.json` (раньше), данные игрока `<level>/players/data/<uuid>.dat` /
 //!    `<level>/playerdata/<uuid>.dat` (время последнего входа Bukkit/Paper или время изменения файла).
@@ -499,7 +499,7 @@ mod tests {
     use std::io::Write;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-pstats-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-pstats-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

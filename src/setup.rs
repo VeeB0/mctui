@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn paste_path_and_save_local() {
-        let d = std::env::temp_dir().join(format!("mctui-setup-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-setup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("server.jar"), b"").unwrap();
@@ -504,7 +504,7 @@ mod tests {
         s.field = 1;
         s.paste(&format!("{}\n", d.display()));
         assert!(s.detection.error.is_none(), "{:?}", s.detection.error);
-        assert!(s.name.value.starts_with("mctui-setup-"));
+        assert!(s.name.value.starts_with("pechka-setup-"));
         match s.handle_key(key(KeyCode::Enter)) {
             Outcome::Save(c) => {
                 assert_eq!(c.dir.unwrap(), d.canonicalize().unwrap());

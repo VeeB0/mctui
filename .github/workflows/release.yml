@@ -3,7 +3,7 @@ name: Release
 # Выпуск: раздел ## [X.Y.Z] в CHANGELOG.md, version в Cargo.toml, затем
 # git tag vX.Y.Z && git push origin main vX.Y.Z. Описание релиза берётся из CHANGELOG.md.
 # Нужен секрет MINISIGN_SECRET_KEY — содержимое секретного ключа minisign (без пароля), открытый ключ
-# к нему лежит в packaging/minisign.pub и вшит в программу: `mctui update` не ставит неподписанную сборку.
+# к нему лежит в packaging/minisign.pub и вшит в программу: `pechka update` не ставит неподписанную сборку.
 on:
   push:
     tags: ["v*"]
@@ -12,8 +12,8 @@ permissions:
   contents: write
 
 env:
-  # Вшивается в бинарник: откуда `mctui update` берёт новые версии.
-  MCTUI_REPO: ${{ github.repository }}
+  # Вшивается в бинарник: откуда `pechka update` берёт новые версии.
+  PECHKA_REPO: ${{ github.repository }}
 
 jobs:
   build:
@@ -45,11 +45,14 @@ jobs:
         shell: bash
         run: |
           mkdir dist
-          name="mctui-${{ matrix.target }}${{ matrix.ext }}"
-          cp "target/${{ matrix.target }}/release/mctui${{ matrix.ext }}" "dist/$name"
-          cd dist
-          if command -v sha256sum >/dev/null; then sha256sum "$name" > "$name.sha256"; else shasum -a 256 "$name" > "$name.sha256"; fi
-          cat "$name.sha256"
+          # mctui-* — та же сборка под старым именем: версии до 0.7 (mctui) обновляются только на неё.
+          for prefix in pechka mctui; do
+            name="$prefix-${{ matrix.target }}${{ matrix.ext }}"
+            cp "target/${{ matrix.target }}/release/pechka${{ matrix.ext }}" "dist/$name"
+            ( cd dist
+              if command -v sha256sum >/dev/null; then sha256sum "$name" > "$name.sha256"; else shasum -a 256 "$name" > "$name.sha256"; fi
+              cat "$name.sha256" )
+          done
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
@@ -71,19 +74,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$MINISIGN_SECRET_KEY" ]; then
-            echo "::error::MINISIGN_SECRET_KEY is not set — mctui update refuses unsigned builds"
+            echo "::error::MINISIGN_SECRET_KEY is not set — pechka update refuses unsigned builds"
             exit 1
           fi
           sudo apt-get update -qq && sudo apt-get install -y -qq minisign
           key="$RUNNER_TEMP/minisign.key"
           ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key" )
           trap 'rm -f "$key"' EXIT
-          for f in dist/mctui-*; do
+          for f in dist/pechka-* dist/mctui-*; do
             case "$f" in *.sha256|*.minisig) continue ;; esac
             name=$(basename "$f")
-            # Доверенный комментарий проверяет mctui update: версия и платформа должны совпасть.
-            minisign -S -s "$key" -m "$f" -t "mctui ${GITHUB_REF_NAME} $name" < /dev/null
-            # -H: только формат с предварительным хешем — другой mctui не примет; ключ — тот, что вшит.
+            # Доверенный комментарий проверяет pechka update: версия и платформа должны совпасть.
+            minisign -S -s "$key" -m "$f" -t "pechka ${GITHUB_REF_NAME} $name" < /dev/null
+            # -H: только формат с предварительным хешем — другой pechka не примет; ключ — тот, что вшит.
             minisign -V -H -p packaging/minisign.pub -m "$f"
           done
           ls -la dist
@@ -97,7 +100,7 @@ jobs:
             install.ps1
           body_path: release-notes.md
 
-  # Обновляет формулу в tap VeeB0/homebrew-mctui (brew install VeeB0/mctui/mctui).
+  # Обновляет формулу в tap VeeB0/homebrew-pechka (brew install VeeB0/pechka/pechka).
   # Нужен секрет HOMEBREW_TAP_DEPLOY_KEY — приватный SSH-ключ, добавленный в tap как
   # deploy key с правом записи. Без секрета задача пропускается с предупреждением.
   homebrew:
@@ -105,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-      TAP_REPO: VeeB0/homebrew-mctui
+      TAP_REPO: VeeB0/homebrew-pechka
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check prerequisites
@@ -127,10 +130,10 @@ jobs:
         if: steps.check.outputs.enabled == 'true'
         run: |
           gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D sha \
-            -p mctui-aarch64-apple-darwin.sha256 \
-            -p mctui-x86_64-apple-darwin.sha256 \
-            -p mctui-aarch64-unknown-linux-musl.sha256 \
-            -p mctui-x86_64-unknown-linux-musl.sha256
+            -p pechka-aarch64-apple-darwin.sha256 \
+            -p pechka-x86_64-apple-darwin.sha256 \
+            -p pechka-aarch64-unknown-linux-musl.sha256 \
+            -p pechka-x86_64-unknown-linux-musl.sha256
           cat sha/*.sha256
       - name: Update formula in tap
         if: steps.check.outputs.enabled == 'true'
@@ -148,13 +151,16 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           git clone --depth 1 "git@github.com:${TAP_REPO}.git" tap
           mkdir -p tap/Formula
-          packaging/homebrew/render.sh "$version" sha > tap/Formula/mctui.rb
+          packaging/homebrew/render.sh "$version" sha > tap/Formula/pechka.rb
+          # Формула mctui переименована: brew update переносит установку mctui на pechka.
+          printf '{\n  "mctui": "pechka"\n}\n' > tap/formula_renames.json
           cd tap
-          git add Formula/mctui.rb
+          git rm -q --ignore-unmatch Formula/mctui.rb
+          git add Formula/pechka.rb formula_renames.json
           if git diff --cached --quiet; then
             echo "Formula already up to date for $version"
             exit 0
           fi
           git -c user.name=VeeB0 -c user.email=45315332+VeeB0@users.noreply.github.com \
-            commit -m "mctui $version"
+            commit -m "pechka $version"
           git push origin HEAD

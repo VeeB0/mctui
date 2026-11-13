@@ -1,8 +1,8 @@
- mctui │ Survival ● работает                                          L · Логи
+ pechka │ Survival ● работает                                         L · Логи
 ┌ Серверы ───────────────┐ 1 Статус │ 2 Игроки │ 3 Доступ │ 4 Плагины │ 5 Настро
 │● Survival 2👤           │┌ Статус ────────────────────────────────────────────┐
 │● Lobby rcon            ││Состояние              работает                     │
-│                        ││Папка                  /nonexistent/mctui-snapshot/s│
+│                        ││Папка                  /nonexistent/pechka-snapshot/│
 │                        ││PID                    4242                         │
 │                        ││Версия                 Purpur 26.3                  │
 │                        ││CPU / RAM              12% / 2.0 ГиБ                │

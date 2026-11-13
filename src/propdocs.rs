@@ -197,8 +197,8 @@ pub static DOCS: &[PropDoc] = &[
     doc!(
         "enable-rcon",
         Bool,
-        "Удалённая консоль RCON (mctui берёт по ней TPS и игроков)",
-        "Remote console RCON (mctui uses it for TPS and players)",
+        "Удалённая консоль RCON (pechka берёт по ней TPS и игроков)",
+        "Remote console RCON (pechka uses it for TPS and players)",
         important
     ),
     doc!(

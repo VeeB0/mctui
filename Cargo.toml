@@ -1,6 +1,6 @@
 [package]
-name = "mctui"
-version = "0.6.0"
+name = "pechka"
+version = "0.7.0"
 description = "TUI для серверов Minecraft: консоль, логи, RCON, бэкапы, авто-рестарт"
 license = "MIT"
 edition = "2024"

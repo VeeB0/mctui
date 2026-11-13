@@ -5,6 +5,22 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-11-13
+
+### Изменено
+- **mctui теперь называется pechka.** Команда — `pechka`, репозиторий — `VeeB0/pechka`, Homebrew —
+  `brew install VeeB0/pechka/pechka`. Переход со старой версии автоматический:
+  - файл программы переименовывается в `pechka`, команда `mctui` остаётся синонимом
+    (ссылка, на Windows — `mctui.cmd`; в Homebrew — `bin/mctui`);
+  - настройки переезжают из `~/.config/mctui` в `~/.config/pechka`, на старом месте остаётся ссылка.
+    На Windows настройки остаются в `%APPDATA%\mctui`;
+  - автозапуск `io.github.veeb0.mctui` / `mctui.service` / ключ `Run\mctui` заменяется на `pechka`.
+    Работающая служба при этом не останавливается, серверы продолжают работать;
+  - переменные `PECHKA_*` заменяют `MCTUI_*`, старые имена тоже понимаются;
+  - в релизе сборки лежат и под старым именем `mctui-<платформа>`, поэтому `Ctrl+U` и `mctui update`
+    в версиях до 0.7 обновляют сразу до pechka;
+  - формула Homebrew переименована (`formula_renames.json`), `brew upgrade` переносит установку сам.
+
 ## [0.6.0] — 2026-11-13
 
 ### Добавлено
@@ -187,11 +203,12 @@
 - `mctui update` — обновление из GitHub Releases с проверкой SHA-256; установщики для macOS, Linux и Windows.
 - Мышь, история команд, хоткеи в русской раскладке.
 
-[Unreleased]: https://github.com/VeeB0/mctui/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/VeeB0/mctui/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/VeeB0/mctui/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/VeeB0/mctui/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/VeeB0/mctui/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/VeeB0/mctui/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/VeeB0/mctui/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/VeeB0/mctui/releases/tag/v0.1.0
+[Unreleased]: https://github.com/VeeB0/pechka/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/VeeB0/pechka/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/VeeB0/pechka/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/VeeB0/pechka/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/VeeB0/pechka/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/VeeB0/pechka/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/VeeB0/pechka/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/VeeB0/pechka/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/VeeB0/pechka/releases/tag/v0.1.0

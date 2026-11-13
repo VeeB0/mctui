@@ -308,7 +308,7 @@ pub struct App {
     pub update_available: Option<String>,
     /// Где нарисован значок обновления (для клика).
     pub update_badge: Cell<Rect>,
-    /// Идёт обновление mctui из окна.
+    /// Идёт обновление pechka из окна.
     pub updating: bool,
     /// После выхода запустить окно заново из этого файла (обновлённая версия).
     pub reexec: Option<PathBuf>,
@@ -599,7 +599,7 @@ impl App {
         }
     }
 
-    /// Ctrl+U / клик по значку: предложить обновить mctui.
+    /// Ctrl+U / клик по значку: предложить обновить pechka.
     pub fn self_update(&mut self) {
         if self.updating {
             return self.toast(tr!("обновление уже идёт…", "already updating…"), ToastKind::Info);
@@ -635,14 +635,14 @@ impl App {
             )
         };
         self.popup = Some(Popup::Confirm {
-            title: tr!("Обновление mctui", "Update mctui").into(),
+            title: tr!("Обновление pechka", "Update pechka").into(),
             text: tr!(
                 format!(
-                    "Обновить mctui {} → {v} {how}? Настройки сохранятся. {servers} Окно откроется заново.",
+                    "Обновить pechka {} → {v} {how}? Настройки сохранятся. {servers} Окно откроется заново.",
                     crate::update::VERSION
                 ),
                 format!(
-                    "Update mctui {} → {v} {how}? Settings are kept. {servers} The window reopens.",
+                    "Update pechka {} → {v} {how}? Settings are kept. {servers} The window reopens.",
                     crate::update::VERSION
                 )
             ),
@@ -652,7 +652,7 @@ impl App {
 
     fn run_self_update(&mut self, v: String) {
         self.updating = true;
-        self.toast(tr!(format!("обновляю mctui до {v}…"), format!("updating mctui to {v}…")), ToastKind::Info);
+        self.toast(tr!(format!("обновляю pechka до {v}…"), format!("updating pechka to {v}…")), ToastKind::Info);
         self.spawn_task(
             move || crate::update::update_to(&v).map(|p| (p, v)),
             |app, res| {
@@ -662,7 +662,7 @@ impl App {
                         // Новое окно увидит службу старой версии и само перезапустит её (без остановки серверов).
                         app.reexec = Some(path);
                         app.exit_message =
-                            Some(tr!(format!("mctui обновлён до {v}."), format!("mctui updated to {v}.")));
+                            Some(tr!(format!("pechka обновлена до {v}."), format!("pechka updated to {v}.")));
                         app.should_quit = true;
                     }
                     Err(e) => app.toast(

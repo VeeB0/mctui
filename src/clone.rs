@@ -5,7 +5,7 @@
 //! (ничего не меняет), [`run`] — скопировать. Код блокирующий: UI вызывает его из spawn_blocking.
 //!
 //! Не копируются: папка бэкапов (если лежит внутри сервера), `logs/`, `crash-reports/`, `cache/`,
-//! служебные `.mctui-old/`, `.mctui-before-restore/`, `.mctui-before-reset/`, все `session.lock`
+//! служебные `.pechka-old/`, `.pechka-before-restore/`, `.pechka-before-reset/`, все `session.lock`
 //! и недописанные бэкапы (`*.tar.gz.part`, `*.snap.partial`). Остальное копируется настоящими копиями
 //! (не жёсткими ссылками — копия независима), с правами доступа и временем изменения файлов;
 //! символьные ссылки копируются как ссылки.
@@ -24,8 +24,8 @@ const RESERVE: u64 = 200 * 1024 * 1024;
 const TEST_MARK: &str = " [test]";
 /// Папки верхнего уровня, которые не копируются.
 const SKIP_TOP: &[&str] = &["logs", "crash-reports", "cache"];
-/// Служебные папки mctui — не копируются на любой глубине.
-const SKIP_ANY: &[&str] = &[crate::plugins::OLD_DIR, ".mctui-before-restore", crate::world::RESET_STASH_DIR];
+/// Служебные папки pechka — не копируются на любой глубине.
+const SKIP_ANY: &[&str] = &[crate::plugins::OLD_DIR, ".pechka-before-restore", crate::world::RESET_STASH_DIR];
 /// Порты Minecraft / Velocity по умолчанию.
 const DEFAULT_PORT: u16 = 25565;
 const DEFAULT_RCON_PORT: u16 = 25575;
@@ -548,7 +548,7 @@ mod tests {
     use std::fs;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-clone-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-clone-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
@@ -584,10 +584,10 @@ mod tests {
         write(&s.join("logs/latest.log"), "log");
         write(&s.join("crash-reports/c.txt"), "crash");
         write(&s.join("cache/mojang.jar"), "jar");
-        write(&s.join(".mctui-old/purpur-1.jar"), "old");
-        write(&s.join(".mctui-before-restore/20260101/world/level.dat"), "old");
-        write(&s.join(".mctui-before-reset/x/level.dat"), "old");
-        write(&s.join("plugins/.mctui-old/Foo.jar"), "old");
+        write(&s.join(".pechka-old/purpur-1.jar"), "old");
+        write(&s.join(".pechka-before-restore/20260101/world/level.dat"), "old");
+        write(&s.join(".pechka-before-reset/x/level.dat"), "old");
+        write(&s.join("plugins/.pechka-old/Foo.jar"), "old");
         write(&s.join("plugins/Foo.jar"), "foo");
         write(&s.join("plugins/Foo/logs/keep.log"), "nested logs are plugin data");
         write(&s.join("backups/srv-20260101-000000.tar.gz"), "backup");
@@ -598,15 +598,15 @@ mod tests {
         let plan = plan_with(&cfg, std::slice::from_ref(&cfg), &all_free).unwrap();
         assert_eq!(plan.dest.file_name().unwrap(), "srv-test");
         for want in [
-            ".mctui-before-reset/",
-            ".mctui-before-restore/",
-            ".mctui-old/",
+            ".pechka-before-reset/",
+            ".pechka-before-restore/",
+            ".pechka-old/",
             "backups/",
             "cache/",
             "crash-reports/",
             "half.tar.gz.part",
             "logs/",
-            "plugins/.mctui-old/",
+            "plugins/.pechka-old/",
             "srv-20260101-000000.snap.partial/",
             "world/session.lock",
             "world_nether/session.lock",
@@ -629,10 +629,10 @@ mod tests {
             "logs",
             "crash-reports",
             "cache",
-            ".mctui-old",
-            ".mctui-before-restore",
-            ".mctui-before-reset",
-            "plugins/.mctui-old",
+            ".pechka-old",
+            ".pechka-before-restore",
+            ".pechka-before-reset",
+            "plugins/.pechka-old",
             "backups",
             "world/session.lock",
             "half.tar.gz.part",

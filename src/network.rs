@@ -18,7 +18,7 @@ fn curl() -> Command {
     let mut c = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
     // -4: друзьям нужен IPv4; без --retry, чтобы не висеть.
     c.args(["-4", "-fsS", "--connect-timeout", "5", "--max-time", "15"]);
-    c.arg("-A").arg(format!("mctui/{}", crate::update::VERSION));
+    c.arg("-A").arg(format!("pechka/{}", crate::update::VERSION));
     c.stdin(Stdio::null());
     c
 }

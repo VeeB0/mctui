@@ -581,8 +581,8 @@ impl App {
                     p.lines.push(PanelLine::new(
                         Tone::Muted,
                         tr!(
-                            "«Всего» — из файлов мира; «Сегодня» и «7 дней» — по журналу mctui (с версии 0.3).",
-                            "“Total” comes from the world files; “Today” and “7 days” from the mctui log (since 0.3)."
+                            "«Всего» — из файлов мира; «Сегодня» и «7 дней» — по журналу pechka (с версии 0.3).",
+                            "“Total” comes from the world files; “Today” and “7 days” from the pechka log (since 0.3)."
                         ),
                     ));
                 });

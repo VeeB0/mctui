@@ -2,7 +2,7 @@
 //! в коде через `tr!("по-русски", "in English")`. Для строк с подстановкой —
 //! `tr!(format!("… {x}"), format!("… {x}"))`: вычисляется только выбранная ветка.
 //!
-//! Язык: переменная `MCTUI_LANG` (ru/en) → поле `language` в servers.toml → язык системы.
+//! Язык: переменная `PECHKA_LANG` (ru/en) → поле `language` в servers.toml → язык системы.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -39,8 +39,7 @@ pub fn system_lang() -> Lang {
 
 /// Выбор языка при старте: env → конфиг (`Some("ru" | "en")`, `None`/"auto" — системный).
 pub fn init(config_language: Option<&str>) {
-    let lang = std::env::var("MCTUI_LANG")
-        .ok()
+    let lang = crate::legacy::env("LANG")
         .and_then(|v| Lang::parse(&v))
         .or_else(|| config_language.and_then(Lang::parse))
         .unwrap_or_else(system_lang);

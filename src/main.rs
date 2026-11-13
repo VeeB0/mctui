@@ -17,6 +17,7 @@ mod event;
 mod i18n;
 mod input;
 mod jvm;
+mod legacy;
 mod log;
 mod network;
 mod playerstats;
@@ -44,35 +45,35 @@ use std::time::Duration;
 
 fn usage() -> String {
     let body = tr!(
-        "mctui — TUI для серверов Minecraft
+        "pechka — TUI для серверов Minecraft
 
 Использование:
-  mctui                       открыть окно (серверы работают в фоновой службе)
-  mctui --config <файл>       другой файл настроек
-  mctui daemon                запустить фоновую службу в этом терминале
-  mctui daemon status         состояние службы и серверов
-  mctui daemon stop           остановить все серверы и службу
-  mctui daemon restart        перезапустить службу (серверы продолжают работать)
-  mctui autostart on|off      запуск службы при входе в систему
-  mctui update [--force]      обновить mctui (настройки сохраняются)
-  mctui --version             версия
+  pechka                       открыть окно (серверы работают в фоновой службе)
+  pechka --config <файл>       другой файл настроек
+  pechka daemon                запустить фоновую службу в этом терминале
+  pechka daemon status         состояние службы и серверов
+  pechka daemon stop           остановить все серверы и службу
+  pechka daemon restart        перезапустить службу (серверы продолжают работать)
+  pechka autostart on|off      запуск службы при входе в систему
+  pechka update [--force]      обновить pechka (настройки сохраняются)
+  pechka --version             версия
 
-Язык: MCTUI_LANG=en|ru или language в servers.toml.
+Язык: PECHKA_LANG=en|ru или language в servers.toml.
 Настройки: ",
-        "mctui — a TUI for Minecraft servers
+        "pechka — a TUI for Minecraft servers
 
 Usage:
-  mctui                       open the window (servers run in a background service)
-  mctui --config <file>       use another settings file
-  mctui daemon                run the background service in this terminal
-  mctui daemon status         show the service and its servers
-  mctui daemon stop           stop all servers and the service
-  mctui daemon restart        restart the service (servers keep running)
-  mctui autostart on|off      start the service when you log in
-  mctui update [--force]      update mctui (settings are kept)
-  mctui --version             show the version
+  pechka                       open the window (servers run in a background service)
+  pechka --config <file>       use another settings file
+  pechka daemon                run the background service in this terminal
+  pechka daemon status         show the service and its servers
+  pechka daemon stop           stop all servers and the service
+  pechka daemon restart        restart the service (servers keep running)
+  pechka autostart on|off      start the service when you log in
+  pechka update [--force]      update pechka (settings are kept)
+  pechka --version             show the version
 
-Language: MCTUI_LANG=en|ru or `language` in servers.toml.
+Language: PECHKA_LANG=en|ru or `language` in servers.toml.
 Settings: "
     );
     format!("{body}{}", config::default_path().display())
@@ -113,7 +114,7 @@ fn parse_args() -> Args {
                 std::process::exit(0)
             }
             "-V" | "--version" | "version" => {
-                println!("mctui {}", update::VERSION);
+                println!("pechka {}", update::VERSION);
                 std::process::exit(0)
             }
             "update" | "upgrade" | "self-update" => cmd = Cmd::Update { force: false },
@@ -130,6 +131,22 @@ fn parse_args() -> Args {
         }
     }
     Args { config, cmd }
+}
+
+/// Переход со старого имени mctui (до 0.7): файл программы, папка настроек и, на Windows,
+/// автозапуск, который указывал на mctui.exe. Подробности — в `legacy.rs`.
+fn migrate_from_mctui(default_config: bool) {
+    let renamed = legacy::migrate_exe();
+    if default_config {
+        legacy::migrate_settings(&config::config_base());
+    }
+    // На macOS и Linux старый автозапуск продолжает работать через ссылку mctui → pechka и
+    // снимается при следующей установке автозапуска; на Windows ключ Run указывал на mctui.exe.
+    #[cfg(windows)]
+    if renamed.is_some() && default_config && service::legacy_installed() {
+        let _ = service::install();
+    }
+    let _ = renamed;
 }
 
 fn restore_terminal() {
@@ -151,11 +168,12 @@ fn main() {
     // Язык до разбора аргументов — для справки; потом уточняется по servers.toml.
     i18n::init(None);
     let args = parse_args();
-    // Основной конфиг (не --config и не MCTUI_CONFIG) — только для него ставится автозапуск системы.
-    let default_config = args.config.is_none() && std::env::var_os("MCTUI_CONFIG").is_none();
+    // Основной конфиг (не --config и не PECHKA_CONFIG) — только для него ставится автозапуск системы.
+    let default_config = args.config.is_none() && legacy::env_os("CONFIG").is_none();
+    migrate_from_mctui(default_config);
     let (cfg, cfg_path) = match config::Config::load(args.config) {
         Ok(v) => v,
-        Err(e) => die(format!("mctui: {e:#}"), 1),
+        Err(e) => die(format!("pechka: {e:#}"), 1),
     };
     i18n::init(cfg.language.as_deref());
     let cfg_path = std::path::absolute(&cfg_path).unwrap_or(cfg_path);
@@ -166,7 +184,7 @@ fn main() {
         Cmd::Daemon => match rt.block_on(daemon::run(cfg_path)) {
             Ok(()) => 0,
             Err(e) => {
-                eprintln!("mctui daemon: {e:#}");
+                eprintln!("pechka daemon: {e:#}");
                 1
             }
         },
@@ -183,7 +201,7 @@ fn main() {
                         0
                     }
                     Err(e) => {
-                        eprintln!("mctui: {e:#}");
+                        eprintln!("pechka: {e:#}");
                         1
                     }
                 }
@@ -198,7 +216,7 @@ fn main() {
                 0
             }
             Err(e) => {
-                eprintln!("mctui: {e:#}");
+                eprintln!("pechka: {e:#}");
                 1
             }
         },
@@ -211,7 +229,7 @@ fn main() {
 async fn daemon_status(cfg_path: &std::path::Path) -> i32 {
     match client::status(cfg_path).await {
         Ok(Some((proto::Msg::Welcome { version, pid, .. }, servers))) => {
-            println!("{} {version} (pid {pid}) — {}", tr!("Служба mctui", "mctui service"), cfg_path.display());
+            println!("{} {version} (pid {pid}) — {}", tr!("Служба pechka", "pechka service"), cfg_path.display());
             let auto = if service::installed() { tr!("включён", "on") } else { tr!("выключен", "off") };
             println!("{}: {auto}", tr!("Автозапуск при входе", "Start at login"));
             for s in servers {
@@ -226,7 +244,7 @@ async fn daemon_status(cfg_path: &std::path::Path) -> i32 {
             3
         }
         Err(e) => {
-            eprintln!("mctui: {e:#}");
+            eprintln!("pechka: {e:#}");
             1
         }
     }
@@ -256,7 +274,7 @@ async fn daemon_stop(cfg_path: &std::path::Path, verbose: bool) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("mctui: {e:#}");
+            eprintln!("pechka: {e:#}");
             1
         }
     }
@@ -267,8 +285,8 @@ fn autostart(on: bool, cfg_path: &std::path::Path, default_config: bool) -> i32 
         eprintln!(
             "{}",
             tr!(
-                "автозапуск работает только с основным файлом настроек (без --config / MCTUI_CONFIG)",
-                "autostart only works with the main settings file (no --config / MCTUI_CONFIG)"
+                "автозапуск работает только с основным файлом настроек (без --config / PECHKA_CONFIG)",
+                "autostart only works with the main settings file (no --config / PECHKA_CONFIG)"
             )
         );
         return 2;
@@ -288,8 +306,8 @@ fn autostart(on: bool, cfg_path: &std::path::Path, default_config: bool) -> i32 
                 println!(
                     "{}",
                     tr!(
-                        "Автозапуск выключен. Служба запустится при открытии mctui.",
-                        "Autostart disabled. The service will start when you open mctui."
+                        "Автозапуск выключен. Служба запустится при открытии pechka.",
+                        "Autostart disabled. The service will start when you open pechka."
                     )
                 );
             }
@@ -297,7 +315,7 @@ fn autostart(on: bool, cfg_path: &std::path::Path, default_config: bool) -> i32 
             0
         }
         Err(e) => {
-            eprintln!("mctui: {e:#}");
+            eprintln!("pechka: {e:#}");
             1
         }
     }
@@ -325,7 +343,7 @@ async fn daemon_detach(cfg_path: &std::path::Path) -> bool {
     false
 }
 
-/// `mctui daemon restart`: с 0.4 серверы продолжают работать; старую службу приходится останавливать с ними.
+/// `pechka daemon restart`: с 0.4 серверы продолжают работать; старую службу приходится останавливать с ними.
 async fn daemon_restart(cfg_path: &std::path::Path) -> i32 {
     match daemon_can_detach(cfg_path).await {
         Some(true) => {
@@ -364,8 +382,8 @@ async fn after_update(cfg_path: &std::path::Path) {
             println!(
                 "{}",
                 tr!(
-                    "Служба перезапустится на новой версии при открытии mctui; серверы продолжают работать.",
-                    "The service restarts on the new version when you open mctui; servers keep running."
+                    "Служба перезапустится на новой версии при открытии pechka; серверы продолжают работать.",
+                    "The service restarts on the new version when you open pechka; servers keep running."
                 )
             );
         }
@@ -375,8 +393,8 @@ async fn after_update(cfg_path: &std::path::Path) {
         Ok(Some((_, servers))) if servers.iter().any(|s| s.running()) => println!(
             "{}",
             tr!(
-                "Служба со старой версией продолжает работать, пока запущены серверы. Когда будет удобно: mctui daemon restart",
-                "The old service keeps running while servers are up. When convenient: mctui daemon restart"
+                "Служба со старой версией продолжает работать, пока запущены серверы. Когда будет удобно: pechka daemon restart",
+                "The old service keeps running while servers are up. When convenient: pechka daemon restart"
             )
         ),
         Ok(Some(_)) => {
@@ -384,8 +402,8 @@ async fn after_update(cfg_path: &std::path::Path) {
             println!(
                 "{}",
                 tr!(
-                    "Служба перезапустится на новой версии при открытии mctui.",
-                    "The service will restart on the new version when you open mctui."
+                    "Служба перезапустится на новой версии при открытии pechka.",
+                    "The service will restart on the new version when you open pechka."
                 )
             );
         }
@@ -402,7 +420,7 @@ async fn tui(cfg_path: PathBuf, default_config: bool) -> i32 {
     }));
     if let Err(e) = execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste) {
         restore_terminal();
-        eprintln!("mctui: {e}");
+        eprintln!("pechka: {e}");
         return 1;
     }
     let res = run(&mut terminal, cfg_path, default_config).await;
@@ -418,7 +436,7 @@ async fn tui(cfg_path: PathBuf, default_config: bool) -> i32 {
             }
         }
         Err(e) => {
-            eprintln!("mctui: {e:#}");
+            eprintln!("pechka: {e:#}");
             1
         }
     }
@@ -428,11 +446,11 @@ async fn tui(cfg_path: PathBuf, default_config: bool) -> i32 {
 fn check_update(tx: tokio::sync::mpsc::UnboundedSender<event::AppEvent>) {
     // Только для отладочных сборок: проверить обновление из окна, не выпуская релиз.
     #[cfg(debug_assertions)]
-    if let Ok(v) = std::env::var("MCTUI_TEST_UPDATE") {
+    if let Ok(v) = std::env::var("PECHKA_TEST_UPDATE") {
         let _ = tx.send(event::AppEvent::UpdateAvailable(v));
         return;
     }
-    if update::REPO.starts_with("__") || std::env::var_os("MCTUI_NO_UPDATE_CHECK").is_some() {
+    if update::REPO.starts_with("__") || legacy::env_os("NO_UPDATE_CHECK").is_some() {
         return;
     }
     tokio::task::spawn_blocking(move || {
@@ -495,14 +513,14 @@ fn reopen(exe: &std::path::Path) -> i32 {
     {
         use std::os::unix::process::CommandExt;
         let e = cmd.exec();
-        eprintln!("mctui: {e} — {}", tr!("откройте mctui заново", "open mctui again"));
+        eprintln!("pechka: {e} — {}", tr!("откройте pechka заново", "open pechka again"));
         1
     }
     #[cfg(not(unix))]
     match cmd.status() {
         Ok(st) => st.code().unwrap_or(0),
         Err(e) => {
-            eprintln!("mctui: {e} — {}", tr!("откройте mctui заново", "open mctui again"));
+            eprintln!("pechka: {e} — {}", tr!("откройте pechka заново", "open pechka again"));
             1
         }
     }

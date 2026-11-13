@@ -6,13 +6,13 @@
 //!   старой версией. Интерфейс должен предупредить и сначала сделать резервную копию.
 //!
 //! [`apply`] скачивает jar (с проверкой контрольной суммы, если API её даёт), убирает старый в
-//! `<dir>/.mctui-old/` (как `plugins.rs`), меняет имя jar в скрипте запуска (только этот токен) и, если
+//! `<dir>/.pechka-old/` (как `plugins.rs`), меняет имя jar в скрипте запуска (только этот токен) и, если
 //! Java скрипта слишком старая для новой версии, ставит подходящую: системную, уже лежащую в папке или
 //! скачанную Temurin JRE (как при создании сервера).
 //!
 //! Сервер должен быть остановлен — это гарантирует вызывающая сторона (по состоянию процесса в службе).
 //! Файл `world/session.lock` намеренно не проверяется: на Unix его блокировка не видна другим процессам
-//! надёжно, а сервер, которым управляет mctui, и так известен как остановленный.
+//! надёжно, а сервер, которым управляет pechka, и так известен как остановленный.
 
 use anyhow::{Context, Result, bail};
 use std::cmp::Ordering;
@@ -83,7 +83,7 @@ pub struct Applied {
     pub build: Option<String>,
     /// Имя нового jar в папке сервера.
     pub jar: String,
-    /// Куда убран старый jar (`<dir>/.mctui-old/…`).
+    /// Куда убран старый jar (`<dir>/.pechka-old/…`).
     pub old_jar: PathBuf,
     /// Изменённый скрипт запуска.
     pub script: Option<PathBuf>,
@@ -528,7 +528,7 @@ pub(crate) fn free_name(dir: &Path, base: &str) -> PathBuf {
 
 /// Записывает скрипт через временный файл и переименование, сохраняя права (исполняемость).
 pub(crate) fn write_script(path: &Path, text: &str) -> Result<()> {
-    let tmp = path.with_file_name(format!(".{}.mctui-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
+    let tmp = path.with_file_name(format!(".{}.pechka-tmp", path.file_name().unwrap_or_default().to_string_lossy()));
     std::fs::write(&tmp, text)?;
     if let Ok(meta) = std::fs::metadata(path) {
         let _ = std::fs::set_permissions(&tmp, meta.permissions());
@@ -537,7 +537,7 @@ pub(crate) fn write_script(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ставит скачанный `part` на место jar: старый — в `.mctui-old/`, скрипт — с новым именем jar и Java.
+/// Ставит скачанный `part` на место jar: старый — в `.pechka-old/`, скрипт — с новым именем jar и Java.
 /// При ошибке всё возвращается как было. Возвращает (куда убран старый jar, изменённый скрипт).
 fn swap_in(
     dir: &Path,
@@ -651,7 +651,7 @@ pub fn apply(
     let new_name = if parse_jar_name(&old_name).is_none() { old_name.clone() } else { remote.name.clone() };
 
     let mut guard = create::Cleanup { dir: dir.to_path_buf(), created_dir: false, paths: Vec::new(), armed: true };
-    let part = guard.track(dir.join(format!("{new_name}.mctui-part")));
+    let part = guard.track(dir.join(format!("{new_name}.pechka-part")));
     create::download(&remote.url, &part, &remote.label, remote.size, progress)?;
     if let Some(sum) = &remote.checksum {
         progress(Progress::Step(tr!("Проверяю контрольную сумму…", "Verifying checksum…").to_string()));
@@ -769,7 +769,7 @@ mod tests {
     struct TempDir(PathBuf);
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let d = std::env::temp_dir().join(format!("mctui-coreupd-{tag}-{}", std::process::id()));
+            let d = std::env::temp_dir().join(format!("pechka-coreupd-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
             Self(d)
@@ -931,7 +931,7 @@ mod tests {
         let out = rewrite_script(USER_SH, false, "purpur-26.4-1.jar", Some("./jre/jdk-26/bin/java")).unwrap();
         assert!(out.ends_with("exec ./jre/jdk-26/bin/java -Xms2G -Xmx4G -jar purpur-26.4-1.jar --nogui\n"));
 
-        // Скрипт mctui (create.rs), кавычки, «$@».
+        // Скрипт pechka (create.rs), кавычки, «$@».
         let sh = create::start_script("jre/a b/bin/java", 2048, "paper-1.21.4-232.jar", "--nogui", false);
         let r = find_in_script(&sh, false).unwrap();
         assert_eq!(r.java.unwrap().value, "jre/a b/bin/java");
@@ -1015,7 +1015,7 @@ mod tests {
         let inst = detect(d).unwrap();
         std::fs::write(d.join("new.part"), b"new").unwrap();
         let (backup, script) = swap_in(d, &inst, &d.join("new.part"), "purpur-26.3-2660.jar", None).unwrap();
-        assert_eq!(backup, d.join(".mctui-old/purpur-26.3-2658.jar"));
+        assert_eq!(backup, d.join(".pechka-old/purpur-26.3-2658.jar"));
         assert_eq!(std::fs::read(&backup).unwrap(), b"old");
         assert_eq!(std::fs::read(d.join("purpur-26.3-2660.jar")).unwrap(), b"new");
         assert!(!d.join("purpur-26.3-2658.jar").exists() && !d.join("new.part").exists());
@@ -1027,12 +1027,12 @@ mod tests {
             assert_eq!(std::fs::metadata(d.join("start.sh")).unwrap().permissions().mode() & 0o777, 0o755);
         }
 
-        // Тот же jar ещё раз: в .mctui-old имя занято — берётся свободное.
+        // Тот же jar ещё раз: в .pechka-old имя занято — берётся свободное.
         let inst = detect(d).unwrap();
         std::fs::write(d.join("new.part"), b"newer").unwrap();
-        std::fs::write(d.join(".mctui-old/purpur-26.3-2660.jar"), b"x").unwrap();
+        std::fs::write(d.join(".pechka-old/purpur-26.3-2660.jar"), b"x").unwrap();
         let (backup, _) = swap_in(d, &inst, &d.join("new.part"), "purpur-26.3-2660.jar", None).unwrap();
-        assert_ne!(backup, d.join(".mctui-old/purpur-26.3-2660.jar"));
+        assert_ne!(backup, d.join(".pechka-old/purpur-26.3-2660.jar"));
         assert_eq!(std::fs::read(&backup).unwrap(), b"new");
 
         // Скрипт без -jar — откат: старый jar на месте, новый не оставлен.
@@ -1144,6 +1144,6 @@ mod tests {
         assert!(script.contains(&a.jar));
         let again = detect(d).unwrap();
         assert_eq!(again.mc_version, target);
-        assert!(d.read_dir().unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".mctui-part")));
+        assert!(d.read_dir().unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".pechka-part")));
     }
 }

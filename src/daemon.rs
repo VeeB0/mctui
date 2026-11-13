@@ -1,6 +1,6 @@
 //! Фоновая служба: держит серверы запущенными, пока окно TUI закрыто.
 //!
-//! `mctui daemon` слушает 127.0.0.1 на случайном порту; порт и токен — в `daemon.json`
+//! `pechka daemon` слушает 127.0.0.1 на случайном порту; порт и токен — в `daemon.json`
 //! (права 0600). Окна подключаются, получают снимки состояния и строки логов, шлют команды.
 
 use crate::config::Config;
@@ -67,7 +67,7 @@ pub async fn alive(config_path: &Path) -> bool {
 
 pub async fn run(config_path: PathBuf) -> Result<()> {
     if alive(&config_path).await {
-        anyhow::bail!(tr!("служба mctui уже запущена", "the mctui service is already running"));
+        anyhow::bail!(tr!("служба pechka уже запущена", "the pechka service is already running"));
     }
     let (cfg, config_path) = Config::load(Some(config_path))?;
     crate::i18n::init(cfg.language.as_deref());
@@ -79,7 +79,7 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
         &ep_path,
         &Endpoint { port, token: token.clone(), pid: std::process::id(), version: crate::update::VERSION.into() },
     )?;
-    eprintln!("mctui daemon {} pid {} port {port}", crate::update::VERSION, std::process::id());
+    eprintln!("pechka daemon {} pid {} port {port}", crate::update::VERSION, std::process::id());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
     let mut mgr = Manager::new(cfg, config_path.clone(), tx);
@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     fn tmp_config(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-daemon-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-daemon-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.join("servers.toml")

@@ -9,7 +9,7 @@
 //! - [`preview`] / [`apply`] меняют только строку запуска: память, флаги старого набора на флаги нового;
 //!   свои `-D…`, `-Xss…` и прочие флаги пользователя, jar и аргументы после него остаются. Остальные строки
 //!   скрипта, окончания строк (`\r\n` / `\n`) и права файла сохраняются, старый скрипт копируется в
-//!   `<dir>/.mctui-old/<скрипт>-ГГГГммдд-ЧЧММСС`.
+//!   `<dir>/.pechka-old/<скрипт>-ГГГГммдд-ЧЧММСС`.
 //!
 //! Разбор строки — общий с `core_update` ([`cu::find_in_script`], [`cu::tokens`]).
 //! Сервер должен быть остановлен — новые параметры подействуют при следующем запуске.
@@ -275,8 +275,8 @@ fn parse_jvm(words: &[&str], where_: &str) -> Result<Jvm> {
     for &w in words {
         if w.starts_with('@') {
             bail!(tr!(
-                format!("{where_}: параметры Java читаются из файла ({w}) — так mctui менять не умеет"),
-                format!("{where_}: Java options are read from a file ({w}) — mctui can't edit that")
+                format!("{where_}: параметры Java читаются из файла ({w}) — так pechka менять не умеет"),
+                format!("{where_}: Java options are read from a file ({w}) — pechka can't edit that")
             ));
         }
         if has_variable(w) {
@@ -345,10 +345,10 @@ fn no_launch_line(path: &Path, text: &str, bat: bool) -> anyhow::Error {
     if forge {
         anyhow::anyhow!(tr!(
             format!(
-                "{name}: Java запускается с @user_jvm_args.txt (Forge / NeoForge) — память задаётся в этом файле, mctui его пока не меняет"
+                "{name}: Java запускается с @user_jvm_args.txt (Forge / NeoForge) — память задаётся в этом файле, pechka его пока не меняет"
             ),
             format!(
-                "{name}: Java is started with @user_jvm_args.txt (Forge / NeoForge) — memory is set in that file, which mctui doesn't edit yet"
+                "{name}: Java is started with @user_jvm_args.txt (Forge / NeoForge) — memory is set in that file, which pechka doesn't edit yet"
             )
         ))
     } else {
@@ -371,16 +371,16 @@ fn parse_script(path: &Path) -> Result<Parsed> {
     let continued = |l: &str| l.trim_end().ends_with(cont);
     if continued(line) || (r.line > 0 && continued(lines[r.line - 1])) {
         bail!(tr!(
-            format!("{name}: строка запуска разбита на несколько строк ({cont} в конце) — так mctui менять не умеет"),
-            format!("{name}: the launch line is split over several lines ({cont} at the end) — mctui can't edit that")
+            format!("{name}: строка запуска разбита на несколько строк ({cont} в конце) — так pechka менять не умеет"),
+            format!("{name}: the launch line is split over several lines ({cont} at the end) — pechka can't edit that")
         ));
     }
     let Some(java_idx) = r.java_idx else {
         let var = r.toks[..r.jar_flag].iter().find(|t| has_variable(&t.value));
         bail!(match var {
             Some(t) => tr!(
-                format!("{name}: Java задана переменной ({}) — эту строку mctui менять не умеет", t.value),
-                format!("{name}: Java is set by a variable ({}) — mctui can't edit this line", t.value)
+                format!("{name}: Java задана переменной ({}) — эту строку pechka менять не умеет", t.value),
+                format!("{name}: Java is set by a variable ({}) — pechka can't edit this line", t.value)
             ),
             None => tr!(
                 format!("{name}: в строке запуска перед -jar не найдена java"),
@@ -781,7 +781,7 @@ pub struct Applied {
     pub after: String,
     /// Новая команда для настроек сервера, если Java запускается командой, а не скриптом.
     pub new_command: Option<Vec<String>>,
-    /// Копия старого скрипта (`<dir>/.mctui-old/start.sh-20261113-054500`); у [`preview`] — `None`.
+    /// Копия старого скрипта (`<dir>/.pechka-old/start.sh-20261113-054500`); у [`preview`] — `None`.
     pub backup: Option<PathBuf>,
     /// Строка запуска после изменения.
     pub launch: Launch,
@@ -1016,7 +1016,7 @@ pub fn preview(dir: &Path, command: &[String], change: &Change) -> Result<Applie
     prepare(dir, command, change).map(|(a, _)| a)
 }
 
-/// Копия скрипта в `<dir>/.mctui-old/<скрипт>-ГГГГммдд-ЧЧММСС` (права копируются вместе с файлом).
+/// Копия скрипта в `<dir>/.pechka-old/<скрипт>-ГГГГммдд-ЧЧММСС` (права копируются вместе с файлом).
 fn backup_script(dir: &Path, script: &Path) -> Result<PathBuf> {
     let old_dir = dir.join(crate::plugins::OLD_DIR);
     std::fs::create_dir_all(&old_dir)?;
@@ -1035,7 +1035,7 @@ fn backup_script(dir: &Path, script: &Path) -> Result<PathBuf> {
 }
 
 /// Меняет память и флаги в строке запуска (сервер должен быть остановлен). Скрипт: сначала копия в
-/// `.mctui-old/`, затем запись через временный файл (при ошибке старый скрипт остаётся на месте).
+/// `.pechka-old/`, затем запись через временный файл (при ошибке старый скрипт остаётся на месте).
 /// Команда из настроек: файлы не трогаются, новая команда — в [`Applied::new_command`], её сохраняет
 /// вызывающая сторона. Если ничего не меняется — ничего не пишется.
 pub fn apply(dir: &Path, command: &[String], change: &Change) -> Result<Applied> {
@@ -1056,7 +1056,7 @@ mod tests {
     struct TempDir(PathBuf);
     impl TempDir {
         fn new(tag: &str) -> Self {
-            let d = std::env::temp_dir().join(format!("mctui-jvm-{tag}-{}", std::process::id()));
+            let d = std::env::temp_dir().join(format!("pechka-jvm-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             std::fs::create_dir_all(&d).unwrap();
             Self(d)
@@ -1314,7 +1314,7 @@ mod tests {
         let p = preview(d, &cmd, &change).unwrap();
         assert!(p.changed() && p.backup.is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), script);
-        assert!(!d.join(".mctui-old").exists());
+        assert!(!d.join(".pechka-old").exists());
 
         let a = apply(d, &cmd, &change).unwrap();
         assert_eq!(a.after, p.after);
@@ -1336,7 +1336,7 @@ mod tests {
         assert!(text.ends_with("\necho stopped\n"));
         // Копия старого скрипта.
         let backup = a.backup.clone().unwrap();
-        assert!(backup.starts_with(d.join(".mctui-old")));
+        assert!(backup.starts_with(d.join(".pechka-old")));
         assert!(backup.file_name().unwrap().to_string_lossy().starts_with("start.sh-"));
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), script);
         #[cfg(unix)]
@@ -1413,7 +1413,7 @@ mod tests {
     fn bat_crlf_preserved() {
         let t = TempDir::new("crlf");
         let d = &t.0;
-        let bat = "@echo off\r\nrem Generated by mctui\r\ncd /d \"%~dp0\"\r\njava -Xms1G -Xmx2G -jar paper-1.21.4-232.jar nogui %*\r\npause\r\n";
+        let bat = "@echo off\r\nrem Generated by pechka\r\ncd /d \"%~dp0\"\r\njava -Xms1G -Xmx2G -jar paper-1.21.4-232.jar nogui %*\r\npause\r\n";
         sh(d, "start.bat", bat);
         let cmd = strs(&["cmd", "/C", "start.bat"]);
         let a = apply(d, &cmd, &Change { xmx_mb: Some(4096), xms_equal: true, profile: Some(Profile::Aikar) }).unwrap();
@@ -1422,7 +1422,7 @@ mod tests {
         assert_eq!(text.matches('\n').count(), 5, "no bare LF");
         assert!(
             text.starts_with(
-                "@echo off\r\nrem Generated by mctui\r\ncd /d \"%~dp0\"\r\njava -Xms4G -Xmx4G -XX:+UseG1GC"
+                "@echo off\r\nrem Generated by pechka\r\ncd /d \"%~dp0\"\r\njava -Xms4G -Xmx4G -XX:+UseG1GC"
             )
         );
         assert!(text.ends_with(" -jar paper-1.21.4-232.jar nogui %*\r\npause\r\n"));
@@ -1432,7 +1432,7 @@ mod tests {
         assert_eq!(l.profile, Profile::Aikar);
         assert_eq!(l.args, ["nogui", "%*"]);
 
-        // Скрипт mctui (create.rs) на Unix тоже читается и меняется.
+        // Скрипт pechka (create.rs) на Unix тоже читается и меняется.
         let s = create::start_script("jre/a b/bin/java", 2048, "paper-1.21.4-232.jar", "--nogui", false);
         sh(d, "start.sh", &s);
         let a =

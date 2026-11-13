@@ -899,31 +899,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mctui"
-version = "0.6.0"
-dependencies = [
- "anyhow",
- "chrono",
- "crossterm",
- "dirs",
- "flate2",
- "futures",
- "md-5",
- "minisign-verify",
- "ratatui",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.11.1",
- "sys-locale",
- "sysinfo",
- "tar",
- "tokio",
- "toml",
- "zip",
-]
-
-[[package]]
 name = "md-5"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1202,6 +1177,31 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pechka"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "crossterm",
+ "dirs",
+ "flate2",
+ "futures",
+ "md-5",
+ "minisign-verify",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.1",
+ "sys-locale",
+ "sysinfo",
+ "tar",
+ "tokio",
+ "toml",
+ "zip",
 ]
 
 [[package]]

@@ -1,8 +1,8 @@
 //! Конфигурация серверов (servers.toml) и автоопределение локального сервера по папке.
 //!
 //! Конфиг живёт в папке настроек пользователя и не трогается при обновлении программы:
-//! - macOS / Linux: `~/.config/mctui/servers.toml`
-//! - Windows: `%APPDATA%\mctui\servers.toml`
+//! - macOS / Linux: `~/.config/pechka/servers.toml`
+//! - Windows: `%APPDATA%\pechka\servers.toml`
 
 use crate::tr;
 use anyhow::{Context, Result, bail};
@@ -157,7 +157,7 @@ impl ServerConfig {
         }
     }
 
-    /// Новый локальный сервер (создание или добавление в mctui): сразу с авто-бэкапом
+    /// Новый локальный сервер (создание или добавление в pechka): сразу с авто-бэкапом
     /// [`NEW_SERVER_BACKUP_EVERY_HOURS`]. Старые записи в servers.toml без поля остаются без него.
     pub fn new_local(name: &str, dir: PathBuf, command: Vec<String>, backup_paths: Vec<String>) -> Self {
         Self {
@@ -234,7 +234,7 @@ impl ServerConfig {
     }
 }
 
-/// Путь к конфигу по умолчанию (можно переопределить переменной MCTUI_CONFIG).
+/// Путь к конфигу по умолчанию (можно переопределить переменной PECHKA_CONFIG).
 /// "-Xmx4G" / "-Xmx4096M" / "-Xmx4g" → МиБ (последнее вхождение побеждает, как у Java).
 pub fn parse_xmx(text: &str) -> Option<u64> {
     let mut found = None;
@@ -265,17 +265,23 @@ pub fn state_dir(config_path: &Path) -> PathBuf {
     config_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
 }
 
-pub fn default_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("MCTUI_CONFIG") {
-        return PathBuf::from(p);
-    }
+/// Папка, в которой лежит папка настроек программы.
+pub fn config_base() -> PathBuf {
     let base = if cfg!(windows) {
         dirs::config_dir()
     } else {
         // На macOS тоже ~/.config — так привычнее для консольных программ.
         dirs::home_dir().map(|h| h.join(".config"))
     };
-    base.unwrap_or_else(|| PathBuf::from(".")).join("mctui").join("servers.toml")
+    base.unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub fn default_path() -> PathBuf {
+    if let Some(p) = crate::legacy::env_os("CONFIG") {
+        return PathBuf::from(p);
+    }
+    // До переноса старых настроек (Windows, см. legacy) — папка mctui.
+    crate::legacy::settings_dir(&config_base()).join("servers.toml")
 }
 
 impl Config {
@@ -325,8 +331,8 @@ impl Config {
         let text = format!(
             "{}\n# https://github.com/{}/blob/main/servers.example.toml\n\n{body}",
             tr!(
-                "# Настройки mctui. Файл можно править руками; обновление программы его не трогает.",
-                "# mctui settings. You can edit this file by hand; updates do not touch it."
+                "# Настройки pechka. Файл можно править руками; обновление программы его не трогает.",
+                "# pechka settings. You can edit this file by hand; updates do not touch it."
             ),
             crate::update::REPO
         );
@@ -536,7 +542,7 @@ mod tests {
     use super::*;
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("mctui-cfg-{tag}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-cfg-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

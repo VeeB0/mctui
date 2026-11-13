@@ -15,9 +15,9 @@ use std::process::Command;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// owner/repo; в CI подставляется из `github.repository`.
-pub const REPO: &str = match option_env!("MCTUI_REPO") {
+pub const REPO: &str = match option_env!("PECHKA_REPO") {
     Some(r) => r,
-    None => "VeeB0/mctui",
+    None => "VeeB0/pechka",
 };
 
 /// Открытый ключ minisign, которым CI подписывает сборки. Форк со своими релизами кладёт в
@@ -25,7 +25,7 @@ pub const REPO: &str = match option_env!("MCTUI_REPO") {
 pub const RELEASE_PUBKEY: &str = include_str!("../packaging/minisign.pub");
 
 /// Проверяет подпись minisign сборки `asset` версии `version` (без `v`): подпись ключом `pubkey`
-/// и доверенный комментарий `mctui v<version> <asset>` — чтобы старую подписанную сборку
+/// и доверенный комментарий `pechka v<version> <asset>` — чтобы старую подписанную сборку
 /// или сборку для другой платформы нельзя было выдать за эту.
 fn verify_signature(pubkey: &str, bin: &[u8], minisig: &str, version: &str, asset: &str) -> Result<()> {
     let bad = |e: &dyn std::fmt::Display| {
@@ -52,15 +52,15 @@ fn verify_signature(pubkey: &str, bin: &[u8], minisig: &str, version: &str, asse
 /// Имя файла сборки в релизе для текущей платформы.
 pub fn asset_name() -> Option<&'static str> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("mctui-aarch64-apple-darwin")
+        Some("pechka-aarch64-apple-darwin")
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("mctui-x86_64-apple-darwin")
+        Some("pechka-x86_64-apple-darwin")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("mctui-x86_64-unknown-linux-musl")
+        Some("pechka-x86_64-unknown-linux-musl")
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some("mctui-aarch64-unknown-linux-musl")
+        Some("pechka-aarch64-unknown-linux-musl")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("mctui-x86_64-pc-windows-msvc.exe")
+        Some("pechka-x86_64-pc-windows-msvc.exe")
     } else {
         None
     }
@@ -150,7 +150,7 @@ fn old_path(exe: &Path) -> PathBuf {
     exe.with_file_name(format!("{}.old", exe.file_name().unwrap_or_default().to_string_lossy()))
 }
 
-/// Как установлен mctui — от этого зависит способ обновления.
+/// Как установлен pechka — от этого зависит способ обновления.
 pub enum Install {
     /// Через Homebrew: обновляет `brew upgrade`.
     Homebrew,
@@ -171,12 +171,12 @@ fn brew() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("brew"))
 }
 
-/// `brew upgrade` для формулы mctui; вывод brew не печатается, в ошибке — его последние строки.
+/// `brew upgrade` для формулы pechka; вывод brew не печатается, в ошибке — его последние строки.
 pub fn brew_upgrade() -> Result<()> {
-    // Tap VeeB0/homebrew-mctui → формула VeeB0/mctui/mctui.
-    let formula = format!("{REPO}/mctui");
+    // Короткое имя, без tap: у тех, кто ставил ещё mctui, формула лежит в старом tap
+    // (VeeB0/mctui, переименована в pechka), у новых — в VeeB0/pechka.
     let out = Command::new(brew())
-        .args(["upgrade", &formula])
+        .args(["upgrade", crate::legacy::NAME])
         .output()
         .context(crate::tr!("не удалось запустить brew", "could not run brew"))?;
     if !out.status.success() {
@@ -193,9 +193,9 @@ pub fn apply(exe: &Path, version: &str) -> Result<()> {
     let asset = asset_name()
         .context(crate::tr!("для этой платформы нет готовых сборок", "no prebuilt binaries for this platform"))?;
     let dir = exe.parent().context("exe dir")?;
-    let new = dir.join(format!(".mctui-update-{}", std::process::id()));
-    let sum = dir.join(format!(".mctui-update-{}.sha256", std::process::id()));
-    let sig = dir.join(format!(".mctui-update-{}.minisig", std::process::id()));
+    let new = dir.join(format!(".pechka-update-{}", std::process::id()));
+    let sum = dir.join(format!(".pechka-update-{}.sha256", std::process::id()));
+    let sig = dir.join(format!(".pechka-update-{}.minisig", std::process::id()));
     let base = format!("https://github.com/{REPO}/releases/download/v{version}");
     let res = (|| {
         download(&format!("{base}/{asset}"), &new)?;
@@ -235,8 +235,8 @@ pub fn update_to(version: &str) -> Result<PathBuf> {
     match install_kind()? {
         Install::Homebrew => {
             brew_upgrade()?;
-            // Симлинк bin/mctui после upgrade указывает на новую версию.
-            let link = brew().with_file_name("mctui");
+            // Симлинк bin/pechka после upgrade указывает на новую версию.
+            let link = brew().with_file_name(crate::legacy::NAME);
             Ok(if link.exists() { link } else { std::env::current_exe()? })
         }
         Install::Direct(exe) => {
@@ -246,15 +246,15 @@ pub fn update_to(version: &str) -> Result<PathBuf> {
     }
 }
 
-/// `mctui update`. Возвращает true, если программа заменена.
+/// `pechka update`. Возвращает true, если программа заменена.
 pub fn run_cli(force: bool) -> Result<bool> {
     let exe = match install_kind()? {
         Install::Homebrew => {
             println!(
                 "{}",
                 crate::tr!(
-                    "mctui установлен через Homebrew — обновление: brew upgrade mctui",
-                    "mctui was installed with Homebrew — update with: brew upgrade mctui"
+                    "pechka установлена через Homebrew — обновление: brew upgrade pechka",
+                    "pechka was installed with Homebrew — update with: brew upgrade pechka"
                 )
             );
             return Ok(false);
@@ -266,8 +266,8 @@ pub fn run_cli(force: bool) -> Result<bool> {
     println!(
         "{}",
         crate::tr!(
-            format!("mctui {VERSION} — проверяю обновления ({REPO})…"),
-            format!("mctui {VERSION} — checking for updates ({REPO})…")
+            format!("pechka {VERSION} — проверяю обновления ({REPO})…"),
+            format!("pechka {VERSION} — checking for updates ({REPO})…")
         )
     );
     let latest = latest_version()?;
@@ -287,8 +287,8 @@ pub fn run_cli(force: bool) -> Result<bool> {
     println!(
         "{}",
         crate::tr!(
-            format!("Готово: mctui обновлён до {latest}. Настройки сохранены ({}).", cfg.display()),
-            format!("Done: mctui updated to {latest}. Settings kept ({}).", cfg.display())
+            format!("Готово: pechka обновлена до {latest}. Настройки сохранены ({}).", cfg.display()),
+            format!("Done: pechka updated to {latest}. Settings kept ({}).", cfg.display())
         )
     );
     Ok(true)
@@ -306,8 +306,8 @@ fn replace_self(exe: &Path, new: &Path) -> Result<()> {
         let old = old_path(exe);
         let _ = std::fs::remove_file(&old);
         std::fs::rename(exe, &old).context(crate::tr!(
-            "не удалось переименовать текущий mctui.exe",
-            "could not rename the running mctui.exe"
+            "не удалось переименовать текущий pechka.exe",
+            "could not rename the running pechka.exe"
         ))?;
     }
     std::fs::rename(new, exe).with_context(|| {
@@ -382,9 +382,9 @@ prXJJpLJBmU+cZBUbLyO/iu8V//WH8oPg5uIx5PbI++yh+G2+3mepog0bDOEyAy1jrAjEkz/Nvo5UvRe
 
     #[test]
     fn replace_self_swaps_file() {
-        let d = std::env::temp_dir().join(format!("mctui-upd-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("pechka-upd-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        let exe = d.join("mctui-test-bin");
+        let exe = d.join("pechka-test-bin");
         let new = d.join("new-bin");
         std::fs::write(&exe, b"old").unwrap();
         std::fs::write(&new, b"new").unwrap();

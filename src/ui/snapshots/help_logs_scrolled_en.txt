@@ -4,7 +4,7 @@
 ││  1–7 / ←→         tabs                                                     ││
 ││  Enter / :        type a server command                                    ││
 ││  a                add a server (in the server list)                        ││
-││  Del              remove the server from mctui (files stay)                ││
+││  Del              remove the server from pechka (files stay)               ││
 ││  L                logs, chat, crash reports                                ││
 ││  f                how friends join                                         ││
 ││                                                                            ││
@@ -14,7 +14,7 @@
 ││  Ctrl+R           restart                                                  ││
 ││  Ctrl+B           backup now                                               ││
 ││  Ctrl+L           logs                                                     ││
-││  Ctrl+U           update mctui                                             ││
+││  Ctrl+U           update pechka                                            ││
 ││  ? / F1           this help                                                ││
 ││  Ctrl+Q           quit (servers keep running)                              ││
 ││                                                                            ││

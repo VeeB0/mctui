@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 
 pub(crate) const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 /// Папка внутри `plugins/` / `mods/`, куда откладываются заменённые jar (сервер её не загружает).
-pub const OLD_DIR: &str = ".mctui-old";
+pub const OLD_DIR: &str = ".pechka-old";
 pub(crate) const DISABLED_SUFFIX: &str = ".disabled";
 
 pub const PLUGIN_LOADERS: &[&str] = &["paper", "purpur", "spigot", "bukkit", "folia"];
@@ -99,7 +99,7 @@ pub struct UpdateInfo {
 
 /// Сканирует `<dir>/plugins` и `<dir>/mods`: `*.jar` (включён) и `*.jar.disabled` (выключен).
 /// Сортировка по имени без учёта регистра. Если метаданные не читаются — имя из имени файла.
-/// Подпапки (папки данных плагинов, `.mctui-old`) пропускаются.
+/// Подпапки (папки данных плагинов, `.pechka-old`) пропускаются.
 pub fn scan(server_dir: &Path) -> Vec<PluginInfo> {
     let mut out = Vec::new();
     for (sub, kind) in [("plugins", PluginKind::Plugin), ("mods", PluginKind::Mod)] {
@@ -478,7 +478,7 @@ pub fn sha1_file(path: &Path) -> Result<String> {
 }
 
 fn user_agent() -> String {
-    format!("mctui/{} (github.com/{})", crate::update::VERSION, crate::update::REPO)
+    format!("pechka/{} (github.com/{})", crate::update::VERSION, crate::update::REPO)
 }
 
 pub(crate) fn curl() -> Command {
@@ -711,7 +711,7 @@ pub(crate) fn safe_jar_name(name: &str) -> Result<&str> {
 }
 
 /// Скачивает новый jar во временный файл в той же папке, проверяет SHA-1, переносит старый jar в
-/// `<plugins|mods>/.mctui-old/<файл>` (с перезаписью) и кладёт новый на место (выключенный плагин
+/// `<plugins|mods>/.pechka-old/<файл>` (с перезаписью) и кладёт новый на место (выключенный плагин
 /// остаётся выключенным: `*.jar.disabled`). Возвращает путь к новому файлу. Действует после перезапуска.
 pub fn apply_update(p: &PluginInfo, u: &UpdateInfo) -> Result<PathBuf> {
     apply_update_with(p, u, download)
@@ -731,7 +731,7 @@ fn apply_update_with(p: &PluginInfo, u: &UpdateInfo, fetch: impl Fn(&str, &Path)
     }
 
     // Без расширения .jar — сервер не подхватит недокачанный файл.
-    let tmp = dir.join(format!(".mctui-download-{}.part", std::process::id()));
+    let tmp = dir.join(format!(".pechka-download-{}.part", std::process::id()));
     let res = (|| -> Result<PathBuf> {
         fetch(&u.url, &tmp)?;
         let actual = sha1_file(&tmp)?;
@@ -776,7 +776,7 @@ mod tests {
     impl TempDir {
         fn new(tag: &str) -> Self {
             let d = std::env::temp_dir().join(format!(
-                "mctui-plugins-{tag}-{}-{}",
+                "pechka-plugins-{tag}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
             ));

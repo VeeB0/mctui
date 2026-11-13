@@ -170,7 +170,7 @@ pub fn desktop(title: &str, body: &str) {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        spawn_quiet(std::process::Command::new("notify-send").args(["--app-name=mctui", title, body]));
+        spawn_quiet(std::process::Command::new("notify-send").args(["--app-name=pechka", title, body]));
     }
     #[cfg(windows)]
     {

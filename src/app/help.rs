@@ -97,7 +97,7 @@ fn main_keys() -> Vec<(&'static str, &'static str)> {
         ("1–7 / ←→", tr!("вкладки", "tabs")),
         ("Enter / :", tr!("ввести команду серверу", "type a server command")),
         ("a", tr!("добавить сервер (в списке серверов)", "add a server (in the server list)")),
-        ("Del", tr!("убрать сервер из mctui (файлы остаются)", "remove the server from mctui (files stay)")),
+        ("Del", tr!("убрать сервер из pechka (файлы остаются)", "remove the server from pechka (files stay)")),
         ("L", tr!("логи, чат, crash-reports", "logs, chat, crash reports")),
         ("f", tr!("как друзьям зайти", "how friends join")),
     ]
@@ -110,7 +110,7 @@ fn global_keys() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+R", tr!("перезапустить", "restart")),
         ("Ctrl+B", tr!("бэкап сейчас", "backup now")),
         ("Ctrl+L", tr!("логи", "logs")),
-        ("Ctrl+U", tr!("обновить mctui", "update mctui")),
+        ("Ctrl+U", tr!("обновить pechka", "update pechka")),
         ("? / F1", tr!("эта справка", "this help")),
         ("Ctrl+Q", tr!("выход (серверы продолжат работать)", "quit (servers keep running)")),
     ]

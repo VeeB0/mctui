@@ -1,7 +1,7 @@
 
-  ┌ Welcome to mctui ────────────────────────────────────────────────────────────────────────────┐
+  ┌ Welcome to pechka ───────────────────────────────────────────────────────────────────────────┐
   │Paste the path to a Minecraft server folder (Cmd+V / Ctrl+V, or drag the folder into the      │
-  │terminal). mctui works out how to start it.                                                   │
+  │terminal). pechka works out how to start it.                                                  │
   │                                                                                              │
   │                                                                                              │
   │   Server         ● Existing folder   ○ Create new   ○ Remote (RCON)                          │
@@ -23,6 +23,6 @@
   │                                                                                              │
   │                                                                                              │
   │  Enter  save   Tab/↑↓ fields · ←→ choose · Esc — quit                                        │
-  │ Settings: /nonexistent/mctui-snapshot/servers.toml                                           │
+  │ Settings: /nonexistent/pechka-snapshot/servers.toml                                          │
   └──────────────────────────────────────────────────────────────────────────────────────────────┘
 

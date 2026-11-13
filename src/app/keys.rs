@@ -60,10 +60,10 @@ impl App {
                 KeyCode::Enter => {
                     self.exit_message = Some(tr!(
                         format!(
-                            "Серверы продолжают работать в фоне ({running}). Вернуться: mctui · состояние: mctui daemon status"
+                            "Серверы продолжают работать в фоне ({running}). Вернуться: pechka · состояние: pechka daemon status"
                         ),
                         format!(
-                            "Servers keep running in the background ({running}). Come back: mctui · status: mctui daemon status"
+                            "Servers keep running in the background ({running}). Come back: pechka · status: pechka daemon status"
                         )
                     ));
                     self.should_quit = true;
@@ -72,8 +72,8 @@ impl App {
                     self.send(Request::StopAll);
                     self.exit_message = Some(
                         tr!(
-                            "Серверы штатно останавливаются в фоне (mctui daemon status).",
-                            "Servers are shutting down cleanly in the background (mctui daemon status)."
+                            "Серверы штатно останавливаются в фоне (pechka daemon status).",
+                            "Servers are shutting down cleanly in the background (pechka daemon status)."
                         )
                         .into(),
                     );
@@ -286,12 +286,12 @@ impl App {
         v
     }
 
-    /// Выбранная строка вкладки «Настройки»: опция mctui или пара server.properties.
+    /// Выбранная строка вкладки «Настройки»: опция pechka или пара server.properties.
     pub fn selected_setting_pub(&self) -> Option<Result<Opt, (String, String)>> {
         self.selected_setting()
     }
 
-    /// Выбранная строка вкладки «Настройки»: опция mctui или пара server.properties.
+    /// Выбранная строка вкладки «Настройки»: опция pechka или пара server.properties.
     pub(super) fn selected_setting(&self) -> Option<Result<Opt, (String, String)>> {
         let opts = self.opts();
         if self.settings_sel < opts.len() {
@@ -402,10 +402,10 @@ impl App {
                             title: tr!("Восстановить из бэкапа", "Restore from backup").into(),
                             text: tr!(
                                 format!(
-                                    "Восстановить {paths} из {name}?{running} Текущие файлы переедут в .mctui-before-restore/."
+                                    "Восстановить {paths} из {name}?{running} Текущие файлы переедут в .pechka-before-restore/."
                                 ),
                                 format!(
-                                    "Restore {paths} from {name}?{running} Current files move to .mctui-before-restore/."
+                                    "Restore {paths} from {name}?{running} Current files move to .pechka-before-restore/."
                                 )
                             ),
                             action: Action::Restore { id, path: b.path.clone() },
