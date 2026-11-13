@@ -32,6 +32,36 @@ impl App {
             }
         }
         self.access.sel = self.access.sel.min(self.access.entries.len().saturating_sub(1));
+        if self.access.level == AccessLevel::Entries && self.access.entries.is_empty() {
+            self.access.level = AccessLevel::Lists;
+        }
+    }
+
+    /// Стрелки на вкладке «Доступ» (фокус на содержимом). ↓ спускается: вкладки окна → списки → записи,
+    /// ↑ поднимается обратно. На уровне вкладок ←→ листают вкладки окна, ниже — списки.
+    /// `false` — клавиша не наша, её обработает общий код (←→ по вкладкам, ↑↓ по записям).
+    pub(super) fn access_arrow(&mut self, code: KeyCode) -> bool {
+        use AccessLevel::*;
+        if !self.sel().is_local() {
+            return false;
+        }
+        match (self.access.level, code) {
+            (Tabs, KeyCode::Down) => self.access.level = Lists,
+            (Tabs, KeyCode::Up) => {}
+            (Tabs, _) => return false,
+            (Lists, KeyCode::Up) => self.access.level = Tabs,
+            (Lists, KeyCode::Down) => {
+                if !self.access.entries.is_empty() {
+                    self.access.level = Entries;
+                    self.access.sel = 0;
+                }
+            }
+            (Entries, KeyCode::Up) if self.access.sel == 0 => self.access.level = Lists,
+            (Lists | Entries, KeyCode::Left) => self.cycle_access_list(-1),
+            (Lists | Entries, KeyCode::Right) => self.cycle_access_list(1),
+            _ => return false,
+        }
+        true
     }
 
     pub(super) fn cycle_access_list(&mut self, d: isize) {

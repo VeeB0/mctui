@@ -3,7 +3,7 @@
 use super::layout;
 use super::theme;
 use crate::app::{
-    App, BackupHealth, Focus, ServerUi, TABS, Tab, ToastKind, WorldRow, ago, human_bytes, human_duration,
+    AccessLevel, App, BackupHealth, Focus, ServerUi, TABS, Tab, ToastKind, WorldRow, ago, human_bytes, human_duration,
 };
 use crate::config::Kind;
 use crate::plugins::PluginKind;
@@ -517,20 +517,27 @@ fn draw_access(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     f.render_widget(outer, area);
     let [tabs_area, info_area, list_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-    // Переключатель списков
+    // Переключатель списков. Подсветка фоном — там, куда сейчас смотрят стрелки (см. AccessLevel).
+    let level = if focused { app.access.level } else { AccessLevel::Tabs };
     let mut spans = vec![];
     for (i, l) in crate::access::List::ALL.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" · ", Style::new().fg(theme::BORDER)));
         }
-        let st = if *l == app.access.list {
-            Style::new().fg(theme::BUTTON_FG).bg(theme::HIGHLIGHT_BG).bold()
-        } else {
-            Style::new().fg(theme::MUTED)
+        let st = match (*l == app.access.list, level) {
+            (true, AccessLevel::Lists) => Style::new().fg(theme::BUTTON_FG).bg(theme::HIGHLIGHT_BG).bold(),
+            (true, _) => Style::new().fg(theme::ACCENT).bold(),
+            (false, _) => Style::new().fg(theme::MUTED),
         };
         spans.push(Span::styled(format!(" {} ", l.title()), st));
     }
-    spans.push(Span::styled("  ←→", Style::new().fg(theme::MUTED)));
+    let arrows = match level {
+        AccessLevel::Tabs if focused => tr!("  ↓ выбрать список", "  ↓ choose a list"),
+        AccessLevel::Tabs => "",
+        AccessLevel::Lists => tr!("  ←→ список · ↓ записи · ↑ назад", "  ←→ list · ↓ entries · ↑ back"),
+        AccessLevel::Entries => "  ←→",
+    };
+    spans.push(Span::styled(arrows, Style::new().fg(theme::MUTED)));
     f.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
 
     let mut info = vec![];
@@ -585,7 +592,7 @@ fn draw_access(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         .collect();
     let table = Table::new(rows, [Constraint::Length(20), Constraint::Min(10), Constraint::Length(36)])
         .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
-    let mut st = TableState::default().with_selected(focused.then_some(app.access.sel));
+    let mut st = TableState::default().with_selected((level == AccessLevel::Entries).then_some(app.access.sel));
     f.render_stateful_widget(table, list_area, &mut st);
 }
 
@@ -944,10 +951,20 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
             "↑↓ выбор · k кик · b бан · o/d оп/деоп · w в белый список · s статистика",
             "↑↓ select · k kick · b ban · o/d op/deop · w whitelist · s statistics"
         ),
-        (Focus::Content, Tab::Access) => tr!(
-            "←→ список · a добавить · d удалить · w вкл/выкл белый список · u обновить",
-            "←→ list · a add · d remove · w whitelist on/off · u reload"
-        ),
+        (Focus::Content, Tab::Access) => match app.access.level {
+            AccessLevel::Tabs => tr!(
+                "←→ вкладки · ↓ к спискам · a добавить · w вкл/выкл белый список · u обновить",
+                "←→ tabs · ↓ to the lists · a add · w whitelist on/off · u reload"
+            ),
+            AccessLevel::Lists => tr!(
+                "←→ список · ↓ к записям · ↑ к вкладкам · a добавить · w вкл/выкл белый список · u обновить",
+                "←→ list · ↓ to entries · ↑ to tabs · a add · w whitelist on/off · u reload"
+            ),
+            AccessLevel::Entries => tr!(
+                "↑↓ выбор · ←→ список · a добавить · d удалить · w вкл/выкл белый список · u обновить",
+                "↑↓ select · ←→ list · a add · d remove · w whitelist on/off · u reload"
+            ),
+        },
         (Focus::Content, Tab::Plugins) => tr!(
             "↑↓ выбор · i найти и установить · Пробел вкл/выкл · c обновления · Enter/U обновить · u перечитать",
             "↑↓ select · i find & install · Space on/off · c updates · Enter/U update · u rescan"

@@ -28,7 +28,17 @@ fn tab_keys(tab: Tab) -> Vec<(&'static str, &'static str)> {
             ("s", tr!("статистика: наиграно, входы, активность", "statistics: playtime, logins, activity")),
         ],
         Tab::Access => vec![
-            ("←→", tr!("список: белый, операторы, баны, IP", "list: whitelist, ops, bans, IP bans")),
+            (
+                "↓ / ↑",
+                tr!(
+                    "спуститься к спискам и записям / подняться к вкладкам",
+                    "go down to the lists and entries / back up to the tabs"
+                ),
+            ),
+            (
+                tr!("←→ (в списках) / [ ]", "←→ (in the lists) / [ ]"),
+                tr!("список: белый, операторы, баны, IP", "list: whitelist, ops, bans, IP bans"),
+            ),
             ("a / Enter", tr!("добавить", "add")),
             ("d / Del", tr!("убрать из списка", "remove from the list")),
             ("w", tr!("включить / выключить белый список", "turn the whitelist on / off")),

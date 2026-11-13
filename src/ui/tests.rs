@@ -262,3 +262,67 @@ async fn stop_asks_only_when_players_online() {
         assert!(a.popup.is_none(), "пустой сервер останавливается без вопросов");
     });
 }
+
+#[tokio::test]
+async fn arrows_switch_tabs_on_access_tab() {
+    use crate::access::List;
+    let arrow = |a: &mut App, code| a.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mut a = app(vec![local_running()]);
+    key(&mut a, '3');
+    assert_eq!(a.tab, Tab::Access);
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Plugins, "→ уходит с «Доступа» на следующую вкладку");
+    arrow(&mut a, KeyCode::Left);
+    arrow(&mut a, KeyCode::Left);
+    assert_eq!(a.tab, Tab::Players, "← уходит с «Доступа» на предыдущую вкладку");
+
+    key(&mut a, '3');
+    key(&mut a, ']');
+    assert_eq!(a.access.list, List::Ops, "] — следующий список");
+    key(&mut a, 'х');
+    assert_eq!(a.access.list, List::Whitelist, "х ([ в русской раскладке) — предыдущий список");
+    assert_eq!(a.tab, Tab::Access);
+}
+
+#[tokio::test]
+async fn access_tab_down_enters_lists_up_leaves() {
+    use crate::access::{Entry, List};
+    use crate::app::AccessLevel;
+    let arrow = |a: &mut App, code| a.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    let mut a = app(vec![local_running()]);
+    key(&mut a, '3');
+    assert_eq!(a.access.level, AccessLevel::Tabs);
+
+    arrow(&mut a, KeyCode::Down);
+    assert_eq!(a.access.level, AccessLevel::Lists, "↓ спускается к спискам");
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!((a.tab, a.access.list), (Tab::Access, List::Ops), "в списках → листает списки, а не вкладки");
+    arrow(&mut a, KeyCode::Left);
+    assert_eq!((a.tab, a.access.list), (Tab::Access, List::Whitelist));
+    arrow(&mut a, KeyCode::Down);
+    assert_eq!(a.access.level, AccessLevel::Lists, "в пустой список не спуститься");
+
+    let entry = |name: &str| Entry {
+        name: name.into(),
+        uuid: None,
+        level: None,
+        reason: None,
+        created: None,
+        expires: None,
+        source: None,
+    };
+    a.access.entries = vec![entry("Alex"), entry("Steve")];
+    arrow(&mut a, KeyCode::Down);
+    assert_eq!((a.access.level, a.access.sel), (AccessLevel::Entries, 0), "↓ спускается в записи");
+    arrow(&mut a, KeyCode::Down);
+    assert_eq!(a.access.sel, 1);
+    arrow(&mut a, KeyCode::Up);
+    arrow(&mut a, KeyCode::Up);
+    assert_eq!(a.access.level, AccessLevel::Lists, "↑ с первой записи — обратно к спискам");
+    arrow(&mut a, KeyCode::Up);
+    assert_eq!(a.access.level, AccessLevel::Tabs, "↑ из списков — обратно к вкладкам");
+    arrow(&mut a, KeyCode::Right);
+    assert_eq!(a.tab, Tab::Plugins, "наверху → снова листает вкладки окна");
+    key(&mut a, '3');
+    assert_eq!(a.access.level, AccessLevel::Tabs, "вернулись на «Доступ» — снова наверху");
+}

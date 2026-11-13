@@ -145,6 +145,13 @@ impl App {
             }
             return;
         }
+        if self.focus == Focus::Content
+            && self.tab == Tab::Access
+            && matches!(k.code, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
+            && self.access_arrow(k.code)
+        {
+            return;
+        }
         match k.code {
             KeyCode::Tab => {
                 self.focus = match self.focus {
@@ -190,9 +197,6 @@ impl App {
             KeyCode::Enter if self.focus == Focus::Sidebar => self.focus = Focus::Input,
             KeyCode::Delete if self.focus == Focus::Sidebar => self.ask_remove_server(),
             KeyCode::Delete if self.focus == Focus::Content => self.content_char('d'),
-            KeyCode::Left | KeyCode::Right if self.focus == Focus::Content && self.tab == Tab::Access => {
-                self.cycle_access_list(if k.code == KeyCode::Left { -1 } else { 1 })
-            }
             KeyCode::Left if self.focus == Focus::Content => self.cycle_tab(-1),
             KeyCode::Right => {
                 if self.focus == Focus::Content {
@@ -246,7 +250,13 @@ impl App {
                 Tab::Players => self.players_sel = step(self.players_sel, self.sel().players.len()),
                 Tab::Settings => self.settings_sel = step(self.settings_sel, self.settings_len()),
                 Tab::Backups => self.backups_sel = step(self.backups_sel, self.backups.len()),
-                Tab::Access => self.access.sel = step(self.access.sel, self.access.entries.len()),
+                Tab::Access => {
+                    // PgUp/PgDn/Home/End и колесо мыши сразу ведут в записи.
+                    if !self.access.entries.is_empty() {
+                        self.access.level = AccessLevel::Entries;
+                    }
+                    self.access.sel = step(self.access.sel, self.access.entries.len())
+                }
                 Tab::Plugins => self.plugins.sel = step(self.plugins.sel, self.plugins.items.len()),
                 Tab::World => self.world.sel = step(self.world.sel, self.world.rows().len()),
                 Tab::Status => {}
@@ -416,6 +426,12 @@ impl App {
                 _ => {}
             },
             Tab::Access => {
+                // [ ] (х ъ в русской раскладке) листают списки с любого уровня, без спуска стрелкой ↓.
+                match c {
+                    '[' => return self.cycle_access_list(-1),
+                    ']' => return self.cycle_access_list(1),
+                    _ => {}
+                }
                 if !self.sel().is_local() {
                     return;
                 }
@@ -432,6 +448,14 @@ impl App {
                             input: TextInput::default(),
                             target: EditTarget::AccessAdd(list),
                         });
+                    }
+                    // Выделение записи видно только на уровне записей — не удаляем то, чего не видно.
+                    'd' if self.access.level != AccessLevel::Entries && !self.access.entries.is_empty() => {
+                        self.access.level = AccessLevel::Entries;
+                        self.toast(
+                            tr!("Выберите запись ↑↓ и нажмите d", "Pick an entry with ↑↓ and press d"),
+                            ToastKind::Info,
+                        );
                     }
                     'd' => {
                         if let Some(e) = self.access.entries.get(self.access.sel) {
