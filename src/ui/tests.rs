@@ -814,6 +814,54 @@ async fn addon_search_ignores_stale_popular() {
     });
 }
 
+fn more_hit(title: &str) -> anyhow::Result<crate::plugin_search::SearchResults> {
+    one_hit(title).map(|r| crate::plugin_search::SearchResults { more: true, ..r })
+}
+
+fn search_page(a: &App) -> usize {
+    let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+    let crate::app::PanelKind::PluginSearch { page, .. } = &p.kind else { panic!("ждали поиск") };
+    *page
+}
+
+#[tokio::test]
+async fn addon_search_ignores_more_while_busy() {
+    let srv = paper_search("more-busy");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search("", 0, more_hit("First"));
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        key(&mut a, 'n');
+        assert_eq!(search_page(&a), 1);
+        a.apply_plugin_search("", 1, one_hit("Second"));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.items.iter().any(|r| r.contains("Second")), "{:?}", p.items);
+        assert_eq!(search_page(&a), 1);
+    });
+}
+
+#[tokio::test]
+async fn addon_search_failed_next_page_is_retried() {
+    let srv = paper_search("more-fail");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        a.apply_plugin_search("", 0, more_hit("First"));
+        press(&mut a, KeyCode::Down);
+        key(&mut a, 'n');
+        assert_eq!(search_page(&a), 1);
+        a.apply_plugin_search("", 1, Err(anyhow::anyhow!("boom")));
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert!(p.busy.is_none());
+        assert!(p.lines[0].text.contains("boom"), "{}", p.lines[0].text);
+        assert_eq!(search_page(&a), 0);
+    });
+}
+
 #[tokio::test]
 async fn addons_help_follows_sub_tab() {
     let tab_help =

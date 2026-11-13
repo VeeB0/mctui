@@ -48,6 +48,8 @@ mod tools;
 mod world_tab;
 pub use backup_health::{BackupHealth, ago};
 pub use logs_screen::{LevelFilter, LogSource, LogsView};
+#[cfg(test)]
+pub(crate) use panel::PanelKind;
 pub use panel::{Panel, Tone};
 pub use world_tab::{WorldRow, WorldView};
 

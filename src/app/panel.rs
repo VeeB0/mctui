@@ -354,7 +354,11 @@ impl App {
                         p.input_focus = false;
                     }
                 }
-                Err(e) => p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}"))],
+                Err(e) => {
+                    // Следующая «n» повторит ту же страницу, а не перескочит через неё.
+                    *cur_page = cur_page.saturating_sub(1);
+                    p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}"))];
+                }
             }
         });
         if let Some(w) = warn {
@@ -745,7 +749,9 @@ impl App {
                         return self.probe_network(facts, true);
                     }
                 }
-                ('n', PanelKind::PluginSearch { more: true, .. }) => self.run_plugin_search(&mut p, true),
+                ('n', PanelKind::PluginSearch { more: true, .. }) if p.busy.is_none() => {
+                    self.run_plugin_search(&mut p, true)
+                }
                 (' ', PanelKind::Velocity { .. }) => self.toggle_velocity_backend(&mut p),
                 ('u', PanelKind::Compat { done: true, .. }) if p.busy.is_none() => self.install_compat(&mut p),
                 _ => {}
