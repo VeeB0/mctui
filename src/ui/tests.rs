@@ -10,7 +10,7 @@ use crate::client::Client;
 use crate::config::ServerConfig;
 use crate::event::AppEvent;
 use crate::i18n::{Lang, with_lang};
-use crate::proto::{Msg, RconView, ServerView};
+use crate::proto::{Msg, RconView, Request, ServerView};
 use crate::server::{ServerState, Status};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -49,9 +49,13 @@ fn rcon_unreachable() -> ServerView {
 }
 
 fn app(servers: Vec<ServerView>) -> App {
+    app_with(servers, Client::detached())
+}
+
+fn app_with(servers: Vec<ServerView>, client: Client) -> App {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let config = PathBuf::from(NOWHERE).join("servers.toml");
-    let mut app = App::new(config.clone(), Client::detached(), tx);
+    let mut app = App::new(config.clone(), client, tx);
     app.on_event(AppEvent::Daemon(Box::new(Msg::Welcome {
         version: crate::update::VERSION.into(),
         protocol: crate::proto::PROTOCOL,
@@ -66,6 +70,10 @@ fn app(servers: Vec<ServerView>) -> App {
 
 fn key(app: &mut App, c: char) {
     app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 fn render(app: &App, w: u16, h: u16) -> String {
@@ -360,6 +368,8 @@ async fn addons_on_rcon_server_arrows_switch_tabs() {
     key(&mut a, '4');
     arrow(&mut a, KeyCode::Down);
     assert_eq!(a.addons.level, SubLevel::Tabs, "на RCON-сервере уровни не меняются");
+    key(&mut a, ']');
+    assert_eq!(a.addons.sub, crate::app::AddonsSub::Plugins, "и подвкладки не листаются");
     arrow(&mut a, KeyCode::Right);
     assert_eq!(a.tab, Tab::Settings);
 }
@@ -391,5 +401,243 @@ async fn addons_datapacks_snapshot() {
         a.datapacks.items = vec![terralith, vein];
         arrow(&mut a, KeyCode::Down);
         check("addons_datapacks_en", &render(&a, 120, 34));
+    });
+}
+
+/// Временная папка сервера (`server.properties` с `level-name=world`), удаляется в Drop.
+struct TempServer(PathBuf);
+
+impl TempServer {
+    fn new(tag: &str) -> Self {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("pechka-ui-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("server.properties"), "level-name=world\n").unwrap();
+        TempServer(dir)
+    }
+
+    fn level(&self) -> PathBuf {
+        self.0.join("world")
+    }
+
+    /// zip-датапак в `world/datapacks/`: `pack.mcmeta` и пустые файлы `files`.
+    fn pack(&self, file_name: &str, files: &[&str]) {
+        let mut entries = vec![("pack.mcmeta", r#"{"pack":{"description":"test"}}"#)];
+        entries.extend(files.iter().map(|f| (*f, "{}")));
+        crate::datapacks::tests::make_zip(&self.level().join("datapacks").join(file_name), &entries);
+    }
+
+    /// Локальный сервер в этой папке: `Some(игроки)` — запущен, `None` — остановлен.
+    fn view(&self, players: Option<&[&str]>) -> ServerView {
+        let cfg = ServerConfig::new_local("Sandbox", self.0.clone(), vec!["./start.sh".into()], vec!["world".into()]);
+        let mut v = ServerState::new(cfg, 0).view();
+        v.version = Some("26.3".into());
+        if let Some(p) = players {
+            v.status = Status::Running;
+            v.pid = Some(4242);
+            v.players = p.iter().map(|s| s.to_string()).collect();
+        }
+        v
+    }
+}
+
+impl Drop for TempServer {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `4`, ↓, → — подвкладка «Датапаки»; ещё ↓ — к записям (если они есть).
+fn open_datapacks(a: &mut App) {
+    key(a, '4');
+    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+        press(a, code);
+    }
+    assert_eq!(a.addons.sub, crate::app::AddonsSub::Datapacks);
+}
+
+/// Консольные команды, ушедшие службе с прошлого вызова.
+fn sent_commands(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Request>) -> Vec<String> {
+    let mut v = vec![];
+    while let Ok(r) = rx.try_recv() {
+        if let Request::Command { cmd, .. } = r {
+            v.push(cmd);
+        }
+    }
+    v
+}
+
+fn toast_text(a: &App) -> String {
+    a.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn datapack_toggle_with_players_asks_before_reload() {
+    let srv = TempServer::new("dp-players");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&["Alex"]))], client);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        assert!(srv.level().join("datapacks.disabled/a.zip").is_file());
+        assert!(!srv.level().join("datapacks/a.zip").exists());
+        let Some(Popup::Confirm { text, action: Action::ReloadDatapacks(0), .. }) = &a.popup else {
+            panic!("ждали вопрос о перезагрузке датапаков");
+        };
+        assert!(text.contains("Alex"), "{text}");
+        assert!(sent_commands(&mut rx).is_empty(), "до ответа ничего не отправляется");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(sent_commands(&mut rx), ["minecraft:reload"]);
+        assert!(toast_text(&a).contains("datapacks are reloading"), "{}", toast_text(&a));
+    });
+}
+
+#[tokio::test]
+async fn datapack_toggle_without_players_reloads() {
+    let srv = TempServer::new("dp-empty");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&[]))], client);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        assert!(srv.level().join("datapacks.disabled/a.zip").is_file());
+        assert!(a.popup.is_none());
+        assert!(toast_text(&a).contains("datapacks are reloading"), "{}", toast_text(&a));
+        assert_eq!(sent_commands(&mut rx), ["minecraft:reload"]);
+        // И обратно: пак возвращается в datapacks/, снова перезагрузка.
+        key(&mut a, ' ');
+        assert!(srv.level().join("datapacks/a.zip").is_file());
+        assert!(!srv.level().join("datapacks.disabled/a.zip").exists());
+        assert_eq!(sent_commands(&mut rx), ["minecraft:reload"]);
+    });
+}
+
+#[tokio::test]
+async fn worldgen_datapack_asks_then_needs_restart() {
+    let srv = TempServer::new("dp-worldgen");
+    srv.pack("wg.zip", &["data/ns/worldgen/biome/x.json"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&["Alex"]))], client);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        let Some(Popup::Confirm { action: Action::DatapackToggle(path), .. }) = &a.popup else {
+            panic!("выключение пака генерации мира — только с подтверждением");
+        };
+        assert_eq!(*path, srv.level().join("datapacks/wg.zip"));
+        assert!(srv.level().join("datapacks/wg.zip").is_file(), "до ответа файл на месте");
+        press(&mut a, KeyCode::Enter);
+        assert!(srv.level().join("datapacks.disabled/wg.zip").is_file());
+        assert!(a.popup.is_none(), "перезагрузку не предлагаем");
+        assert!(toast_text(&a).contains("after a restart"), "{}", toast_text(&a));
+        assert!(sent_commands(&mut rx).is_empty(), "minecraft:reload не отправляется");
+    });
+}
+
+#[tokio::test]
+async fn datapack_disabled_in_game_on_stopped_server() {
+    let srv = TempServer::new("dp-ingame-off");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    crate::datapacks::tests::level_dat(&srv.level().join("level.dat"), &["file/a.zip"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(None)], client);
+        open_datapacks(&mut a);
+        assert!(a.datapacks.items[0].disabled_in_game);
+        key(&mut a, ' ');
+        assert!(srv.level().join("datapacks/a.zip").is_file(), "файл не переносится");
+        assert!(toast_text(&a).contains("/datapack"), "{}", toast_text(&a));
+        assert!(sent_commands(&mut rx).is_empty());
+    });
+}
+
+#[tokio::test]
+async fn datapack_disabled_in_game_on_running_server_enables_in_game() {
+    let srv = TempServer::new("dp-ingame-on");
+    srv.pack("a.zip", &["data/ns/function/hi.mcfunction"]);
+    crate::datapacks::tests::level_dat(&srv.level().join("level.dat"), &["file/a.zip"]);
+    with_lang(Lang::En, || {
+        let (client, mut rx) = Client::recording();
+        let mut a = app_with(vec![srv.view(Some(&["Alex"]))], client);
+        open_datapacks(&mut a);
+        key(&mut a, ' ');
+        assert!(srv.level().join("datapacks/a.zip").is_file(), "файл не переносится");
+        assert_eq!(sent_commands(&mut rx), [r#"datapack enable "file/a.zip""#]);
+        assert!(toast_text(&a).contains("a: enabled in game"), "{}", toast_text(&a));
+    });
+}
+
+#[tokio::test]
+async fn datapack_update_confirm_lists_versions_and_worldgen() {
+    use crate::plugins::UpdateInfo;
+    let srv = TempServer::new("dp-update");
+    srv.pack("fn.zip", &["data/ns/function/hi.mcfunction"]);
+    srv.pack("wg.zip", &["data/ns/worldgen/biome/x.json"]);
+    let upd = |v: &str| UpdateInfo {
+        version: v.into(),
+        file_name: "x.zip".into(),
+        url: "https://example.invalid/x.zip".into(),
+        sha1: None,
+        page: String::new(),
+    };
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        open_datapacks(&mut a);
+        let (f, w) = (srv.level().join("datapacks/fn.zip"), srv.level().join("datapacks/wg.zip"));
+        a.datapacks.updates.insert(f.clone(), upd("2.0"));
+        a.datapacks.updates.insert(w.clone(), upd("3.0"));
+        key(&mut a, 'U');
+        let Some(Popup::Confirm { text, action: Action::ApplyDatapackUpdates(paths), .. }) = &a.popup else {
+            panic!("ждали подтверждение обновления");
+        };
+        assert_eq!(*paths, [f.clone(), w.clone()]);
+        for part in ["fn → 2.0", "wg → 3.0", "datapacks.disabled/.pechka-old/", "⚠ wg changes world generation"] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        press(&mut a, KeyCode::Esc);
+        press(&mut a, KeyCode::Enter);
+        let Some(Popup::Confirm { text, action: Action::ApplyDatapackUpdates(paths), .. }) = &a.popup else {
+            panic!("Enter — обновить выбранный");
+        };
+        assert_eq!(*paths, [f]);
+        assert!(!text.contains('⚠'), "{text}");
+        // Пока идёт другая загрузка, второе задание не запускается (временные файлы общие).
+        a.datapacks.busy = Some("…".into());
+        press(&mut a, KeyCode::Enter);
+        assert!(toast_text(&a).contains("please wait"), "{}", toast_text(&a));
+        assert_eq!(a.datapacks.busy.as_deref(), Some("…"));
+    });
+}
+
+#[tokio::test]
+async fn datapack_search_works_without_core() {
+    let srv = TempServer::new("dp-search");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![srv.view(None)]);
+        key(&mut a, '4');
+        key(&mut a, 'i');
+        assert!(a.popup.is_none(), "плагины на ванильном сервере не ищутся");
+        open_datapacks(&mut a);
+        key(&mut a, 'i');
+        let Some(Popup::Panel(p)) = &a.popup else { panic!("ждали панель поиска") };
+        assert_eq!(p.title, " Datapack search · Minecraft 26.3 ");
+        assert!(p.lines[0].text.contains("Source: Modrinth."), "{}", p.lines[0].text);
+    });
+}
+
+#[tokio::test]
+async fn addons_help_follows_sub_tab() {
+    let tab_help =
+        |a: &App| a.help_sections()[0].keys.iter().map(|(k, d)| format!("{k} {d}")).collect::<Vec<_>>().join("\n");
+    with_lang(Lang::En, || {
+        let mut a = app(vec![local_running()]);
+        key(&mut a, '4');
+        assert!(tab_help(&a).contains("find & install (Modrinth, Hangar)"), "{}", tab_help(&a));
+        key(&mut a, ']');
+        let h = tab_help(&a);
+        assert!(h.contains("find & install (Modrinth)") && !h.contains("Hangar"), "{h}");
+        assert!(h.contains("enable / disable the datapack"), "{h}");
     });
 }

@@ -753,6 +753,8 @@ fn draw_datapacks(app: &App, f: &mut Frame, inner: Rect, entries: bool) {
         );
         return;
     }
+    // Колонка обновлений — только когда они есть, иначе она отнимает место у описания.
+    let with_updates = !d.updates.is_empty();
     let rows: Vec<Row> = d
         .items
         .iter()
@@ -770,30 +772,28 @@ fn draw_datapacks(app: &App, f: &mut Frame, inner: Rect, entries: bool) {
                 ""
             };
             let version = d.versions.get(&x.path).map(String::as_str).unwrap_or("—");
-            let upd = d.updates.get(&x.path).map(|u| format!("→ {}", u.version)).unwrap_or_default();
             let name_style = if x.enabled { Style::new().fg(theme::TEXT) } else { Style::new().fg(theme::MUTED) };
-            Row::new(vec![
+            let mut cells = vec![
                 Span::styled(x.name.clone(), name_style),
                 Span::styled(version.to_string(), Style::new().fg(theme::MUTED)),
                 state,
                 Span::styled(mark, Style::new().fg(theme::WARN)),
-                Span::styled(upd, Style::new().fg(theme::ACCENT).bold()),
-                Span::styled(x.description.clone().unwrap_or_default(), Style::new().fg(theme::MUTED)),
-            ])
+            ];
+            if with_updates {
+                let upd = d.updates.get(&x.path).map(|u| format!("→ {}", u.version)).unwrap_or_default();
+                cells.push(Span::styled(upd, Style::new().fg(theme::ACCENT).bold()));
+            }
+            cells.push(Span::styled(x.description.clone().unwrap_or_default(), Style::new().fg(theme::MUTED)));
+            Row::new(cells)
         })
         .collect();
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(24),
-            Constraint::Length(14),
-            Constraint::Length(12),
-            Constraint::Length(11),
-            Constraint::Length(14),
-            Constraint::Min(10),
-        ],
-    )
-    .row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
+    let mut widths =
+        vec![Constraint::Length(24), Constraint::Length(14), Constraint::Length(12), Constraint::Length(11)];
+    if with_updates {
+        widths.push(Constraint::Length(14));
+    }
+    widths.push(Constraint::Min(10));
+    let table = Table::new(rows, widths).row_highlight_style(Style::new().bg(theme::HIGHLIGHT_BG).bold());
     let mut st = TableState::default().with_selected(entries.then_some(d.sel));
     f.render_stateful_widget(table, list_area, &mut st);
 }
@@ -1057,6 +1057,7 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
                 "↑↓ select · ←→ list · a add · d remove · w whitelist on/off · u reload"
             ),
         },
+        // Клавиши одинаковы на обеих подвкладках: каждая из перечисленных работает и с плагинами, и с датапаками.
         (Focus::Content, Tab::Addons) => match app.addons.level {
             SubLevel::Tabs => tr!(
                 "←→ вкладки · ↓ к спискам · i найти и установить · c обновления · U обновить все · u перечитать",

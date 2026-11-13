@@ -27,6 +27,13 @@ impl Client {
         let (tx, _rx) = mpsc::unbounded_channel();
         Self { tx }
     }
+
+    /// Клиент без службы, чьи запросы можно прочитать из `rx` (какие команды ушли серверу — в тестах).
+    #[cfg(all(test, not(windows)))]
+    pub fn recording() -> (Self, mpsc::UnboundedReceiver<Request>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx }, rx)
+    }
 }
 
 pub fn start(config_path: PathBuf, default_config: bool, app: mpsc::UnboundedSender<AppEvent>) -> Client {

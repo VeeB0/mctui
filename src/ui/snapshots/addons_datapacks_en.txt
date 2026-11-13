@@ -3,8 +3,8 @@
 │● Survival 2👤           │┌ Add-ons ───────────────────────────────────────────────────────────────────────────────────┐
 │                        ││ Plugins (0)  ·  Datapacks (2)   ←→                                                         │
 │                        ││Overhauls overworld generation                                                              │
-│                        ││Terralith                2.6.5+26.3     on           world                      Overhauls ov│
-│                        ││VeinMiner                —              off                                     Mine the who│
+│                        ││Terralith                2.6.5+26.3     on           world       Overhauls overworld generat│
+│                        ││VeinMiner                —              off                      Mine the whole vein        │
 │                        ││                                                                                            │
 │                        ││                                                                                            │
 │                        ││                                                                                            │

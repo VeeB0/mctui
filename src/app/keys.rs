@@ -145,11 +145,7 @@ impl App {
             }
             return;
         }
-        if self.focus == Focus::Content
-            && matches!(self.tab, Tab::Access | Tab::Addons)
-            && matches!(k.code, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down)
-            && if self.tab == Tab::Access { self.access_arrow(k.code) } else { self.addons_arrow(k.code) }
-        {
+        if self.focus == Focus::Content && self.sub_tab_arrow(k.code) {
             return;
         }
         match k.code {
@@ -460,12 +456,11 @@ impl App {
                             target: EditTarget::AccessAdd(list),
                         });
                     }
-                    // Выделение записи видно только на уровне записей — не удаляем то, чего не видно.
-                    'd' if self.access.level != SubLevel::Entries && !self.access.entries.is_empty() => {
-                        self.access.level = SubLevel::Entries;
-                        self.toast_pick_entry("d");
-                    }
                     'd' => {
+                        // Выделение записи видно только на уровне записей — не удаляем то, чего не видно.
+                        if self.pick_entry_first("d") {
+                            return;
+                        }
                         if let Some(e) = self.access.entries.get(self.access.sel) {
                             let name = e.name.clone();
                             self.popup = Some(Popup::Confirm {
@@ -487,35 +482,31 @@ impl App {
                 }
             }
             Tab::Addons => {
-                // [ ] (х ъ в русской раскладке) листают подвкладки с любого уровня.
-                match c {
-                    '[' => return self.cycle_addons_sub(-1),
-                    ']' => return self.cycle_addons_sub(1),
-                    _ => {}
-                }
+                // На RCON-сервере вкладка пустая: ни подвкладок, ни действий.
                 if !self.sel().is_local() {
                     return;
                 }
-                match self.addons.sub {
-                    // Датапаки: пока только перечитать (действия — позже).
-                    AddonsSub::Datapacks => {
-                        if c == 'u' {
-                            self.refresh_datapacks(true)
-                        }
-                    }
-                    AddonsSub::Plugins => match c {
-                        'i' | 'n' => self.open_plugin_search(),
+                let sub = self.addons.sub;
+                let datapacks = sub == AddonsSub::Datapacks;
+                match c {
+                    // [ ] (х ъ в русской раскладке) листают подвкладки с любого уровня.
+                    '[' => self.cycle_addons_sub(-1),
+                    ']' => self.cycle_addons_sub(1),
+                    'i' | 'n' => self.open_addon_search(sub),
+                    ' ' => {
                         // Выделение записи видно только на уровне записей — не трогаем то, чего не видно.
-                        ' ' if self.addons.level != SubLevel::Entries && !self.plugins.items.is_empty() => {
-                            self.addons.level = SubLevel::Entries;
-                            self.toast_pick_entry(tr!("Пробел", "Space"));
+                        if self.pick_entry_first(tr!("Пробел", "Space")) {
+                            return;
                         }
-                        ' ' => self.toggle_plugin(),
-                        'c' => self.check_plugin_updates(),
-                        'U' => self.ask_apply_updates(true),
-                        'u' => self.refresh_plugins(true),
-                        _ => {}
-                    },
+                        if datapacks { self.toggle_datapack() } else { self.toggle_plugin() }
+                    }
+                    'c' if datapacks => self.check_datapack_updates(),
+                    'c' => self.check_plugin_updates(),
+                    'U' if datapacks => self.ask_apply_datapack_updates(true),
+                    'U' => self.ask_apply_updates(true),
+                    'u' if datapacks => self.refresh_datapacks(true),
+                    'u' => self.refresh_plugins(true),
+                    _ => {}
                 }
             }
             Tab::World => self.world_char(c),
@@ -543,14 +534,13 @@ impl App {
                 None => {}
             },
             Tab::Addons => {
-                if !self.sel().is_local() || self.addons.sub != AddonsSub::Plugins {
+                if !self.sel().is_local() || self.pick_entry_first("Enter") {
                     return;
                 }
-                if self.addons.level != SubLevel::Entries && !self.plugins.items.is_empty() {
-                    self.addons.level = SubLevel::Entries;
-                    return self.toast_pick_entry("Enter");
+                match self.addons.sub {
+                    AddonsSub::Plugins => self.ask_apply_updates(false),
+                    AddonsSub::Datapacks => self.ask_apply_datapack_updates(false),
                 }
-                self.ask_apply_updates(false)
             }
             Tab::Access => self.content_char('a'),
             Tab::World => self.world_enter(),

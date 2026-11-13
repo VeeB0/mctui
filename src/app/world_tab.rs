@@ -231,8 +231,8 @@ impl App {
         else {
             return self.toast(
                 tr!(
-                    "Для генерации нужен Chunky (плагин или мод) — поставьте его на вкладке «Плагины»",
-                    "Pregeneration needs Chunky (plugin or mod) — install it on the Plugins tab"
+                    "Для генерации нужен Chunky (плагин или мод) — поставьте его на вкладке «Дополнения»",
+                    "Pregeneration needs Chunky (plugin or mod) — install it on the Add-ons tab"
                 ),
                 ToastKind::Info,
             );

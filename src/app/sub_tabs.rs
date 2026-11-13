@@ -36,13 +36,39 @@ pub(super) fn sub_arrow(level: &mut SubLevel, sel: &mut usize, len: usize, code:
 }
 
 impl App {
+    /// Стрелки на вкладках с подвкладками («Доступ», «Дополнения»), фокус на содержимом.
+    /// `false` — клавиша не наша, её обработает общий код.
+    pub(super) fn sub_tab_arrow(&mut self, code: KeyCode) -> bool {
+        if !matches!(code, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down) {
+            return false;
+        }
+        match self.tab {
+            Tab::Access => self.access_arrow(code),
+            Tab::Addons => self.addons_arrow(code),
+            _ => false,
+        }
+    }
+
     /// Выделение записи видно только на уровне записей — действие над ней без этого не выполняем,
-    /// а спускаем туда и подсказываем клавишу.
-    pub(super) fn toast_pick_entry(&mut self, key: &str) {
+    /// а спускаем туда и подсказываем клавишу `key`. `true` — спустили (список не пуст), действие пропустить.
+    pub(super) fn pick_entry_first(&mut self, key: &str) -> bool {
+        let (level, len) = match self.tab {
+            Tab::Access => (self.access.level, self.access.entries.len()),
+            Tab::Addons => (self.addons.level, self.addons_len()),
+            _ => return false,
+        };
+        if level == SubLevel::Entries || len == 0 {
+            return false;
+        }
+        match self.tab {
+            Tab::Access => self.access.level = SubLevel::Entries,
+            _ => self.addons.level = SubLevel::Entries,
+        }
         self.toast(
             tr!(format!("Выберите запись ↑↓ и нажмите {key}"), format!("Pick an entry with ↑↓ and press {key}")),
             ToastKind::Info,
         );
+        true
     }
 }
 

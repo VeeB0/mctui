@@ -296,7 +296,7 @@ fn join_parts<'a>(parts: impl Iterator<Item = &'a serde_json::Value>) -> Option<
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
 
@@ -318,7 +318,7 @@ mod tests {
         }
     }
 
-    fn make_zip(path: &Path, entries: &[(&str, &str)]) {
+    pub(crate) fn make_zip(path: &Path, entries: &[(&str, &str)]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
         for (name, body) in entries {
@@ -339,7 +339,7 @@ mod tests {
     }
 
     /// `level.dat` с `Data.DataPacks.Disabled = disabled`.
-    fn level_dat(path: &Path, disabled: &[&str]) {
+    pub(crate) fn level_dat(path: &Path, disabled: &[&str]) {
         let mut b = vec![10u8];
         s(&mut b, "");
         b.push(10);

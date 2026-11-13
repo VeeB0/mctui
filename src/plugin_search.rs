@@ -43,7 +43,6 @@ pub enum Platform {
     Forge,
     NeoForge,
     /// Датапаки мира (Modrinth, загрузчик `datapack`); `detect` его не возвращает — выбирается вкладкой «Датапаки».
-    #[allow(dead_code)] // создаётся вкладкой «Дополнения» (задача 6)
     Datapack,
 }
 
