@@ -50,22 +50,23 @@ xattr -d com.apple.quarantine "$tmp/mctui" 2>/dev/null || true
 mv -f "$tmp/mctui" "$DIR/mctui"
 say "Установлено: $DIR/mctui ($("$DIR/mctui" --version))"
 
+# PATH прописываем в файл запуска оболочки всегда (идемпотентно): текущий $PATH может прийти
+# из IDE/агента и не совпадать с тем, что увидит новое окно терминала.
+line="export PATH=\"$DIR:\$PATH\""
+case "${SHELL:-}" in
+  */zsh)  rc="$HOME/.zshrc" ;;
+  */bash) if [ "$os" = Darwin ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
+  */fish) rc="" ; mkdir -p "$HOME/.config/fish/conf.d"
+          echo "fish_add_path $DIR" > "$HOME/.config/fish/conf.d/mctui.fish" ;;
+  *)      rc="$HOME/.profile" ;;
+esac
+short_dir=$(printf '%s' "$DIR" | sed "s|^$HOME|\$HOME|")
+if [ -n "$rc" ] && ! grep -qsF "$DIR" "$rc" && ! grep -qsF "$short_dir" "$rc"; then
+  printf '\n# mctui\n%s\n' "$line" >> "$rc"
+  say "Добавил $DIR в PATH ($rc)."
+fi
 case ":$PATH:" in
   *":$DIR:"*) ;;
-  *)
-    line="export PATH=\"$DIR:\$PATH\""
-    case "${SHELL:-}" in
-      */zsh)  rc="$HOME/.zshrc" ;;
-      */bash) if [ "$os" = Darwin ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
-      */fish) rc="" ; mkdir -p "$HOME/.config/fish/conf.d"
-              echo "fish_add_path $DIR" > "$HOME/.config/fish/conf.d/mctui.fish" ;;
-      *)      rc="$HOME/.profile" ;;
-    esac
-    if [ -n "$rc" ] && ! grep -qs "$DIR" "$rc"; then
-      printf '\n# mctui\n%s\n' "$line" >> "$rc"
-      say "Добавил $DIR в PATH ($rc)."
-    fi
-    say "Откройте новое окно терминала (или выполните: $line)"
-    ;;
+  *) say "Откройте новое окно терминала (или выполните: $line)" ;;
 esac
 say "Запуск: mctui    Обновление: mctui update"
