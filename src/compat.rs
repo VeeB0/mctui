@@ -1,4 +1,3 @@
-#![allow(dead_code)] // UI integration pending
 //! Совместимость плагинов / модов с другой версией Minecraft — перед обновлением ядра.
 //!
 //! [`check`] смотрит, у каких включённых jar в `plugins/` (Paper / Purpur) или `mods/` (Fabric) есть сборка

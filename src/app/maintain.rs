@@ -11,6 +11,8 @@ pub struct CoreTarget {
     pub installed: Installed,
     pub version: String,
     pub major: bool,
+    /// Проверка плагинов перед сменой версии — если в ней есть новые сборки (поставить после).
+    pub compat: Option<Box<crate::compat::CompatReport>>,
 }
 
 fn progress_text(p: crate::create::Progress) -> String {
@@ -25,7 +27,7 @@ fn progress_text(p: crate::create::Progress) -> String {
 
 impl App {
     /// Строка «шаг выполнения» в открытой панели — из фоновой задачи.
-    fn panel_progress_sender(&self) -> impl FnMut(String) + Send + 'static {
+    pub(super) fn panel_progress_sender(&self) -> impl FnMut(String) + Send + 'static {
         let tx = self.tx.clone();
         move |text: String| {
             let _ = tx.send(AppEvent::Ui(UiTask(Box::new(move |app: &mut App| {
@@ -72,32 +74,13 @@ impl App {
             return self
                 .toast(tr!("Сначала остановите сервер (Ctrl+X)", "Stop the server first (Ctrl+X)"), ToastKind::Info);
         }
-        let major = cu::is_major_upgrade(inst, &version);
-        let paths = self.sel().cfg.backup_paths.join(", ");
-        let text = if major {
-            tr!(
-                format!(
-                    "Перейти с {} на {version}? Мир будет обновлён до новой версии, вернуться назад нельзя. \
-                     Перед заменой будет сделан полный бэкап ({paths}). Проверьте, что плагины/моды есть под {version}.",
-                    inst.mc_version
-                ),
-                format!(
-                    "Move from {} to {version}? The world gets upgraded and can't go back. \
-                     A full backup ({paths}) is made first. Check that your plugins/mods support {version}.",
-                    inst.mc_version
-                )
-            )
+        let inst = inst.clone();
+        if cu::is_major_upgrade(&inst, &version) {
+            // Сначала — какие плагины/моды есть под новую версию.
+            self.check_compat(p, inst, version);
         } else {
-            tr!(
-                format!("Поставить новую сборку {version}? Старый jar переносится в .mctui-old/."),
-                format!("Install the new {version} build? The old jar is moved to .mctui-old/.")
-            )
-        };
-        self.popup = Some(Popup::Confirm {
-            title: tr!("Обновление ядра", "Core update").into(),
-            text,
-            action: Action::ApplyCore(Box::new(CoreTarget { installed: inst.clone(), version, major })),
-        });
+            self.confirm_core(inst, version, false, None, None);
+        }
     }
 
     pub(super) fn apply_core(&mut self, t: CoreTarget) {
@@ -116,17 +99,19 @@ impl App {
         self.popup = Some(Popup::Panel(Box::new(p)));
         let mut say = self.panel_progress_sender();
         self.spawn_task(
-            move || -> Result<(cu::Applied, Option<PathBuf>), String> {
+            move || -> Result<(cu::Applied, Option<PathBuf>, CoreTarget), String> {
                 let backup = if t.major { Some(backup_before_upgrade(&cfg, &mut say)?) } else { None };
                 let mut progress = |p: crate::create::Progress| say(progress_text(p));
                 let applied =
                     cu::apply(cfg.dir(), &t.installed, &t.version, &mut progress).map_err(|e| format!("{e:#}"))?;
-                Ok((applied, backup))
+                Ok((applied, backup, t))
             },
             move |app, res| {
                 let mut lines = vec![];
+                let mut compat = None;
                 match res {
-                    Ok((a, backup)) => {
+                    Ok((a, backup, t)) => {
+                        compat = t.compat.map(|r| (t.installed, t.version, r));
                         let build = a.build.as_deref().map(|b| format!(" #{b}")).unwrap_or_default();
                         lines.push(PanelLine::new(
                             Tone::Ok,
@@ -175,6 +160,13 @@ impl App {
                 }
                 app.with_panel(|p| {
                     p.busy = None;
+                    if let Some((inst, version, report)) = compat {
+                        super::tools::fill_compat_panel(p, inst, version, *report, true);
+                        // Над списком помещается 8 строк: сразу после «Установлено» — про плагины и клавишу u.
+                        lines.retain(|l| !l.text.is_empty());
+                        let at = 1.min(lines.len());
+                        lines.splice(at..at, p.lines.drain(..));
+                    }
                     p.lines = lines;
                 });
             },

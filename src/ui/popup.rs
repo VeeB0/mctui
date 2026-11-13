@@ -17,11 +17,15 @@ pub fn draw(app: &App, f: &mut Frame) {
     match p {
         Popup::Panel(panel) => super::panel::draw(panel, f),
         Popup::Confirm { title, text, .. } => {
-            let r = centered(f.area(), 64, 8);
+            // Высота — по тексту (с переносами), чтобы длинные подтверждения не обрезались.
+            let w: u16 = 76;
+            let inner = (w.min(f.area().width).saturating_sub(2)).max(1) as usize;
+            let rows: usize = text.lines().map(|l| l.chars().count().div_ceil(inner).max(1)).sum();
+            let r = centered(f.area(), w, (rows + 4).max(8) as u16);
             f.render_widget(Clear, r);
             let b = Block::bordered().title(format!(" {title} ")).border_style(Style::new().fg(theme::WARN));
-            let lines = vec![
-                Line::raw(text.clone()),
+            let mut lines: Vec<Line> = text.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.extend([
                 Line::raw(""),
                 Line::from(vec![
                     Span::styled(" Enter / y ", Style::new().fg(theme::BUTTON_FG).bg(theme::BUTTON_BG).bold()),
@@ -29,7 +33,7 @@ pub fn draw(app: &App, f: &mut Frame) {
                     Span::styled(" Esc / n ", Style::new().fg(theme::TEXT).bg(theme::HIGHLIGHT_BG)),
                     Span::raw(crate::tr!(" отмена", " cancel")),
                 ]),
-            ];
+            ]);
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(b), r);
         }
         Popup::Quit { running } => {

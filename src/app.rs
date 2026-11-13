@@ -30,6 +30,7 @@ pub use crate::core::human_bytes;
 
 mod maintain;
 mod panel;
+mod tools;
 mod world_tab;
 pub use panel::{Panel, Tone};
 pub use world_tab::{WorldRow, WorldView};
@@ -102,6 +103,8 @@ pub enum Action {
     SetLevel(String),
     ApplyCore(Box<maintain::CoreTarget>),
     SelfUpdate(String),
+    CloneServer(Box<crate::clone::ClonePlan>),
+    JvmApply(crate::jvm::Change),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +143,7 @@ pub enum EditTarget {
     Chat,
     LogSearch,
     PregenRadius(crate::world::Dimension),
+    JvmMemory { xms_equal: bool },
 }
 
 pub enum Popup {
@@ -700,6 +704,8 @@ impl App {
             Action::SetLevel(name) => self.set_level(name),
             Action::ApplyCore(t) => self.apply_core(*t),
             Action::SelfUpdate(v) => self.run_self_update(v),
+            Action::CloneServer(p) => self.run_clone(*p),
+            Action::JvmApply(c) => self.apply_jvm(c),
         }
     }
 
@@ -1672,6 +1678,7 @@ impl App {
                         EditTarget::Opt(o) => self.apply_opt(o, &v),
                         EditTarget::AccessAdd(list) => self.access_add(list, &v),
                         EditTarget::PregenRadius(dim) => self.run_pregen(dim, &v),
+                        EditTarget::JvmMemory { xms_equal } => self.set_jvm_memory(v.trim(), xms_equal),
                         EditTarget::LogSearch => {
                             if !v.trim().is_empty() {
                                 self.run_log_search(v.trim().to_string());
@@ -2023,6 +2030,8 @@ impl App {
             Tab::Status => match c {
                 'U' => self.open_core_update(),
                 'v' => self.open_velocity_link(),
+                'T' => self.open_clone(),
+                'J' => self.open_jvm(),
                 _ => {}
             },
         }

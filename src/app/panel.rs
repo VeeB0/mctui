@@ -28,12 +28,44 @@ impl PanelLine {
 }
 
 pub enum PanelKind {
-    Network { facts: Box<Facts> },
-    PluginSearch { target: Target, query: String, hits: Vec<SearchHit>, offset: usize, more: bool },
-    LogSearch { query: String, matches: Vec<crate::crash::LogMatch> },
+    Network {
+        facts: Box<Facts>,
+    },
+    PluginSearch {
+        target: Target,
+        query: String,
+        hits: Vec<SearchHit>,
+        offset: usize,
+        more: bool,
+    },
+    LogSearch {
+        query: String,
+        matches: Vec<crate::crash::LogMatch>,
+    },
     Players,
-    CoreUpdate { installed: Option<crate::core_update::Installed>, targets: Vec<String> },
-    Velocity { backends: Vec<crate::velocity::Backend>, chosen: Vec<bool> },
+    CoreUpdate {
+        installed: Option<crate::core_update::Installed>,
+        targets: Vec<String>,
+    },
+    Velocity {
+        backends: Vec<crate::velocity::Backend>,
+        chosen: Vec<bool>,
+    },
+    /// Ход фоновой работы и её итог, без своих клавиш.
+    Task,
+    /// Параметры Java: пункт списка → изменение (`None` — ввести память вручную).
+    Java {
+        changes: Vec<Option<crate::jvm::Change>>,
+        xms_equal: bool,
+        xmx: Option<u32>,
+    },
+    /// Готовность плагинов/модов к версии `version`; `done` — ядро уже обновлено.
+    Compat {
+        installed: Box<crate::core_update::Installed>,
+        version: String,
+        report: Box<crate::compat::CompatReport>,
+        done: bool,
+    },
 }
 
 pub struct Panel {
@@ -606,6 +638,11 @@ impl App {
                 PanelKind::PluginSearch { .. } => self.pick_plugin(&mut p),
                 PanelKind::CoreUpdate { .. } if p.busy.is_none() => self.pick_core_target(&mut p),
                 PanelKind::Velocity { .. } if p.busy.is_none() && !p.items.is_empty() => self.link_velocity(&mut p),
+                PanelKind::Java { .. } if p.busy.is_none() => self.pick_jvm(&mut p),
+                PanelKind::Compat { installed, version, report, done: false } => {
+                    let (inst, version, report) = ((**installed).clone(), version.clone(), (**report).clone());
+                    return self.confirm_core(inst, version, true, Some(report), None);
+                }
                 PanelKind::LogSearch { query, matches } => {
                     if let Some(m) = matches.get(p.sel) {
                         let (q, m) = (query.clone(), m.clone());
@@ -635,6 +672,7 @@ impl App {
                 }
                 ('n', PanelKind::PluginSearch { more: true, .. }) => self.run_plugin_search(&mut p, true),
                 (' ', PanelKind::Velocity { .. }) => self.toggle_velocity_backend(&mut p),
+                ('u', PanelKind::Compat { done: true, .. }) if p.busy.is_none() => self.install_compat(&mut p),
                 _ => {}
             },
             _ => {}
