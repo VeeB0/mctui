@@ -1,0 +1,27 @@
+# Где лежит: ~/.config/mctui/servers.toml (Windows: %APPDATA%\mctui\servers.toml),
+# или --config <путь> / переменная MCTUI_CONFIG. Обычно его заполняет экран «Добавить сервер» (клавиша a).
+
+# ── Локальный сервер: mctui сам запускает процесс ──
+[[server]]
+name = "Survival"
+kind = "local"
+dir = "/path/to/server"           # папка сервера (обязательно)
+command = ["./start.sh"]          # или ["java", "-Xmx4G", "-jar", "server.jar", "--nogui"]
+auto_restart = true               # перезапуск при падении (стоп после 3 падений за 5 минут)
+restart_delay_secs = 5
+stop_timeout_secs = 60            # сколько ждать после `stop`, прежде чем убить процесс
+backup_paths = ["world"]          # что архивировать (относительно dir)
+backup_dir = "backups"            # куда (относительно dir или абсолютный путь)
+backup_keep = 10                  # сколько последних архивов хранить (0 — все)
+# TPS и точный список игроков берутся по RCON, если он включён в server.properties
+# (на вкладке «Настройки» клавиша r включает его автоматически).
+
+# ── Удалённый сервер по RCON ──
+[[server]]
+name = "Remote"
+kind = "rcon"
+host = "mc.example.org"
+port = 25575
+password_env = "MCTUI_REMOTE_PASS" # пароль из переменной окружения…
+# password = "..."                 # …или прямо в файле
+# log_path = "/srv/mc/logs/latest.log"  # если сервер на этой же машине — лог будет виден в «Логах»
