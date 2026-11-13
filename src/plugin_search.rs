@@ -228,7 +228,7 @@ pub(crate) fn enc(s: &str) -> String {
 }
 
 /// Нормализованное имя для сравнения: только буквы/цифры в нижнем регистре («Fabric API» = «fabric-api»).
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 

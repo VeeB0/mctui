@@ -368,6 +368,8 @@ pub struct App {
     backups_at: Option<Instant>,
     pub access: AccessView,
     pub plugins: PluginsView,
+    /// Номер последнего запроса поиска дополнений (см. `PanelKind::PluginSearch::req`).
+    pub(crate) search_gen: u64,
     pub addons: AddonsNav,
     pub datapacks: DatapacksView,
     pub world: WorldView,
@@ -450,6 +452,7 @@ impl App {
                 busy: false,
             },
             world: WorldView::default(),
+            search_gen: 0,
             plugins: PluginsView {
                 items: vec![],
                 sel: 0,

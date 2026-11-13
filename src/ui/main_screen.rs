@@ -620,10 +620,11 @@ fn draw_addons(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     let n_plugins = p.items.iter().filter(|x| x.kind == PluginKind::Plugin).count();
     let n_mods = p.items.len() - n_plugins;
     let n = p.items.len();
-    let by_core_mods = p.core == Some(AddonsCore::Mods);
+    // По содержимому, а пустой список — по ядру.
     let plugins_label = match (n_plugins, n_mods) {
-        (_, 0) if !by_core_mods => tr!(format!("Плагины ({n})"), format!("Plugins ({n})")),
-        (0, _) | (_, 0) => tr!(format!("Моды ({n})"), format!("Mods ({n})")),
+        (0, 0) if p.core == Some(AddonsCore::Mods) => tr!(format!("Моды ({n})"), format!("Mods ({n})")),
+        (_, 0) => tr!(format!("Плагины ({n})"), format!("Plugins ({n})")),
+        (0, _) => tr!(format!("Моды ({n})"), format!("Mods ({n})")),
         _ => tr!(format!("Плагины и моды ({n})"), format!("Plugins and mods ({n})")),
     };
     let nd = app.datapacks.items.len();

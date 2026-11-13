@@ -38,6 +38,8 @@ pub enum PanelKind {
         hits: Vec<SearchHit>,
         page: usize,
         more: bool,
+        /// Номер запроса: ответ на запрос закрытого окна (или устаревший) отбрасывается.
+        req: u64,
     },
     LogSearch {
         query: String,
@@ -220,11 +222,11 @@ impl App {
         let target = match sub {
             AddonsSub::Datapacks => Target::new(ps::Platform::Datapack, s.version.as_deref()),
             AddonsSub::Plugins => {
-                if self.plugins.core == Some(AddonsCore::Vanilla) {
-                    return self.toast(vanilla_addons_text(), ToastKind::Info);
-                }
                 let hint = s.cfg.command.join(" ");
                 let Some(target) = Target::detect(s.cfg.dir(), &hint, s.version.as_deref()) else {
+                    if self.plugins.core == Some(AddonsCore::Vanilla) {
+                        return self.toast(vanilla_addons_text(), ToastKind::Info);
+                    }
                     return self.toast(
                         tr!(
                             "Не удалось понять ядро сервера (Paper / Fabric / …) — поиск недоступен",
@@ -257,7 +259,7 @@ impl App {
         };
         let mut panel = Panel::new(
             title,
-            PanelKind::PluginSearch { target, query: String::new(), hits: vec![], page: 0, more: false },
+            PanelKind::PluginSearch { target, query: String::new(), hits: vec![], page: 0, more: false, req: 0 },
             tr!(
                 "Enter — искать / установить · ↓ к списку · Tab — к строке поиска · n — ещё · Esc — закрыть",
                 "Enter — search / install · ↓ to the list · Tab — to the search box · n — more · Esc — close"
@@ -282,7 +284,10 @@ impl App {
     }
 
     fn run_plugin_search(&mut self, p: &mut Panel, next_page: bool) {
-        let PanelKind::PluginSearch { target, query, hits, page, .. } = &mut p.kind else { return };
+        self.search_gen = self.search_gen.wrapping_add(1);
+        let req = self.search_gen;
+        let PanelKind::PluginSearch { target, query, hits, page, req: cur_req, .. } = &mut p.kind else { return };
+        *cur_req = req;
         if !next_page {
             *query = p.input.as_ref().map(|i| i.value.trim().to_string()).unwrap_or_default();
             hits.clear();
@@ -294,27 +299,35 @@ impl App {
         }
         let (q, t, pg) = (query.clone(), target.clone(), *page);
         p.busy = Some(tr!("ищу…", "searching…").into());
-        let q_work = q.clone();
-        self.spawn_task(move || search_addons(&q_work, &t, pg), move |app, res| app.apply_plugin_search(&q, pg, res));
+        self.spawn_task(move || search_addons(&q, &t, pg), move |app, res| app.apply_plugin_search(req, res));
     }
 
-    /// Применяет ответ поиска. Ответ на устаревший запрос (панель уже ждёт другой) молча отбрасывается.
-    pub(crate) fn apply_plugin_search(&mut self, query: &str, page: usize, res: anyhow::Result<ps::SearchResults>) {
+    /// Применяет ответ поиска. Ответ на устаревший запрос (панель уже ждёт другой или это уже другое окно)
+    /// молча отбрасывается.
+    pub(crate) fn apply_plugin_search(&mut self, req: u64, res: anyhow::Result<ps::SearchResults>) {
         let mut warn = None;
         self.with_panel(|p| {
-            let PanelKind::PluginSearch { target, query: cur_q, hits, page: cur_page, more } = &mut p.kind else {
+            let PanelKind::PluginSearch { target, query, hits, page: cur_page, more, req: cur_req } = &mut p.kind
+            else {
                 return;
             };
-            if cur_q != query || *cur_page != page {
+            if *cur_req != req {
                 return;
             }
+            let popular = query.is_empty();
             p.busy = None;
             // У датапаков один источник — Modrinth, пояснять буквы M/H незачем.
             let legend = if target.kind() == PluginKind::Datapack { "" } else { " · M — Modrinth, H — Hangar" };
             match res {
                 Ok(r) => {
                     for h in r.hits {
-                        if !hits.iter().any(|x| x.source == h.source && x.id == h.id) {
+                        // Тот же проект из другого источника (страницы набираются порознь) — не дублируем.
+                        let (t, s) = (ps::norm(&h.title), ps::norm(&h.slug));
+                        let dup = hits.iter().any(|x| {
+                            (x.source == h.source && x.id == h.id)
+                                || (x.source != h.source && (ps::norm(&x.title) == t || ps::norm(&x.slug) == s))
+                        });
+                        if !dup {
                             hits.push(h);
                         }
                     }
@@ -347,20 +360,30 @@ impl App {
                         if hits.is_empty() {
                             tr!("ничего не найдено", "nothing found").to_string()
                         } else {
-                            tr!(
-                                format!("найдено: {}{}{legend}", hits.len(), if *more { "+" } else { "" }),
-                                format!("found: {}{}{legend}", hits.len(), if *more { "+" } else { "" })
-                            )
+                            let n = format!("{}{}", hits.len(), if *more { "+" } else { "" });
+                            if popular {
+                                tr!(
+                                    format!("популярное: {n} · введите название и Enter{legend}"),
+                                    format!("popular: {n} · type a name and press Enter{legend}")
+                                )
+                            } else {
+                                tr!(format!("найдено: {n}{legend}"), format!("found: {n}{legend}"))
+                            }
                         },
                     )];
-                    if !hits.is_empty() && !query.is_empty() {
+                    if !hits.is_empty() && !popular {
                         p.input_focus = false;
                     }
                 }
                 Err(e) => {
                     // Следующая «n» повторит ту же страницу, а не перескочит через неё.
                     *cur_page = cur_page.saturating_sub(1);
-                    p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}"))];
+                    let retry = if popular && *cur_page == 0 {
+                        tr!(" · Enter — повторить", " · Enter to retry")
+                    } else {
+                        ""
+                    };
+                    p.lines = vec![PanelLine::new(Tone::Bad, format!("✗ {e:#}{retry}"))];
                 }
             }
         });
@@ -370,6 +393,9 @@ impl App {
     }
 
     fn pick_plugin(&mut self, p: &mut Panel) {
+        if p.busy.is_some() {
+            return;
+        }
         let PanelKind::PluginSearch { target, hits, .. } = &p.kind else { return };
         let Some(hit) = hits.get(p.sel).cloned() else { return };
         let target = target.clone();
