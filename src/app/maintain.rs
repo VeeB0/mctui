@@ -282,8 +282,8 @@ impl App {
                             lines.push(PanelLine::new(
                                 Tone::Info,
                                 tr!(
-                                    format!("Перезапустите прокси и серверы: {}", r.linked.join(", ")),
-                                    format!("Restart the proxy and the servers: {}", r.linked.join(", "))
+                                    format!("Через прокси после перезапуска: {}", r.linked.join(", ")),
+                                    format!("Behind the proxy after a restart: {}", r.linked.join(", "))
                                 ),
                             ));
                         }
