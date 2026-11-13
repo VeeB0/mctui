@@ -16,6 +16,7 @@ mod input;
 mod log;
 mod network;
 mod playerstats;
+mod plugin_search;
 mod plugins;
 mod propdocs;
 mod properties;

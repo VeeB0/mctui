@@ -16,16 +16,16 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const MODRINTH_API: &str = "https://api.modrinth.com/v2";
+pub(crate) const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 /// Папка внутри `plugins/` / `mods/`, куда откладываются заменённые jar (сервер её не загружает).
 pub const OLD_DIR: &str = ".mctui-old";
-const DISABLED_SUFFIX: &str = ".disabled";
+pub(crate) const DISABLED_SUFFIX: &str = ".disabled";
 
 pub const PLUGIN_LOADERS: &[&str] = &["paper", "purpur", "spigot", "bukkit", "folia"];
-const FABRIC_LOADERS: &[&str] = &["fabric"];
-const QUILT_LOADERS: &[&str] = &["quilt", "fabric"];
-const FORGE_LOADERS: &[&str] = &["forge"];
-const NEOFORGE_LOADERS: &[&str] = &["neoforge"];
+pub(crate) const FABRIC_LOADERS: &[&str] = &["fabric"];
+pub(crate) const QUILT_LOADERS: &[&str] = &["quilt", "fabric"];
+pub(crate) const FORGE_LOADERS: &[&str] = &["forge"];
+pub(crate) const NEOFORGE_LOADERS: &[&str] = &["neoforge"];
 const UNKNOWN_MOD_LOADERS: &[&str] = &["fabric", "quilt"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +120,7 @@ pub fn scan(server_dir: &Path) -> Vec<PluginInfo> {
 }
 
 /// `X.jar` → (`X`, true), `X.jar.disabled` → (`X`, false), остальное — None. Регистр расширения не важен.
-fn split_jar_name(file_name: &str) -> Option<(&str, bool)> {
+pub(crate) fn split_jar_name(file_name: &str) -> Option<(&str, bool)> {
     if file_name.starts_with('.') {
         return None;
     }
@@ -481,14 +481,14 @@ fn user_agent() -> String {
     format!("mctui/{} (github.com/{})", crate::update::VERSION, crate::update::REPO)
 }
 
-fn curl() -> Command {
+pub(crate) fn curl() -> Command {
     let mut c = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
     c.args(["-fsSL", "--connect-timeout", "10", "--retry", "2", "--max-time", "120", "-A"]).arg(user_agent());
     c
 }
 
 /// POST JSON (тело — через stdin, чтобы не упираться в длину командной строки на Windows).
-fn post_json(url: &str, body: &serde_json::Value) -> Result<String> {
+pub(crate) fn post_json(url: &str, body: &serde_json::Value) -> Result<String> {
     let mut child = curl()
         .args(["-X", "POST", "-H", "Content-Type: application/json", "--data-binary", "@-", url])
         .stdin(Stdio::piped())
@@ -507,7 +507,7 @@ fn post_json(url: &str, body: &serde_json::Value) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn download(url: &str, dest: &Path) -> Result<()> {
+pub(crate) fn download(url: &str, dest: &Path) -> Result<()> {
     if !url.starts_with("https://") {
         bail!(crate::tr!(
             format!("неподдерживаемый адрес загрузки: {url}"),
@@ -531,24 +531,46 @@ fn download(url: &str, dest: &Path) -> Result<()> {
 // Modrinth
 
 #[derive(Debug, Clone, Deserialize)]
-struct MrVersion {
-    id: String,
-    project_id: String,
-    version_number: String,
+pub(crate) struct MrVersion {
+    pub(crate) id: String,
+    pub(crate) project_id: String,
+    pub(crate) version_number: String,
     #[serde(default)]
-    date_published: String,
+    pub(crate) date_published: String,
     #[serde(default)]
-    files: Vec<MrFile>,
+    pub(crate) files: Vec<MrFile>,
+    #[serde(default)]
+    pub(crate) loaders: Vec<String>,
+    /// `release` / `beta` / `alpha`.
+    #[serde(default)]
+    pub(crate) version_type: String,
+    #[serde(default)]
+    pub(crate) dependencies: Vec<MrDependency>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct MrFile {
+pub(crate) struct MrFile {
     #[serde(default)]
-    hashes: HashMap<String, String>,
-    url: String,
-    filename: String,
+    pub(crate) hashes: HashMap<String, String>,
+    pub(crate) url: String,
+    pub(crate) filename: String,
     #[serde(default)]
-    primary: bool,
+    pub(crate) primary: bool,
+    #[serde(default)]
+    pub(crate) size: Option<u64>,
+}
+
+/// Зависимость версии Modrinth: `dependency_type` — `required` / `optional` / `incompatible` / `embedded`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct MrDependency {
+    #[serde(default)]
+    pub(crate) version_id: Option<String>,
+    #[serde(default)]
+    pub(crate) project_id: Option<String>,
+    #[serde(default)]
+    pub(crate) file_name: Option<String>,
+    #[serde(default)]
+    pub(crate) dependency_type: String,
 }
 
 impl MrVersion {
@@ -556,17 +578,17 @@ impl MrVersion {
         self.files.iter().any(|f| f.hashes.get("sha1").is_some_and(|h| h.eq_ignore_ascii_case(sha1)))
     }
 
-    fn primary_file(&self) -> Option<&MrFile> {
+    pub(crate) fn primary_file(&self) -> Option<&MrFile> {
         self.files.iter().find(|f| f.primary).or_else(|| self.files.first())
     }
 
-    fn published(&self) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    pub(crate) fn published(&self) -> Option<chrono::DateTime<chrono::FixedOffset>> {
         chrono::DateTime::parse_from_rfc3339(&self.date_published).ok()
     }
 }
 
 /// Ответ `version_files` / `version_files/update`: `{ "<sha1>": Version, … }` (неизвестные хэши отсутствуют).
-fn parse_versions_response(json: &str) -> Result<HashMap<String, MrVersion>> {
+pub(crate) fn parse_versions_response(json: &str) -> Result<HashMap<String, MrVersion>> {
     serde_json::from_str(json).context(crate::tr!("непонятный ответ Modrinth", "unexpected Modrinth response"))
 }
 
@@ -677,7 +699,7 @@ pub fn check_updates_with(
 }
 
 /// Имя файла из Modrinth должно быть простым `*.jar` без путей.
-fn safe_jar_name(name: &str) -> Result<&str> {
+pub(crate) fn safe_jar_name(name: &str) -> Result<&str> {
     let ok = !name.is_empty()
         && !name.starts_with('.')
         && !name.contains(['/', '\\', ':', '\0'])
