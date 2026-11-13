@@ -16,6 +16,23 @@ pub enum Kind {
     Rcon,
 }
 
+/// Как делать бэкап: архив `.tar.gz` целиком или инкрементальный снимок-папка с жёсткими ссылками.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupMode {
+    /// `<prefix>-YYYYmmdd-HHMMSS.tar.gz`
+    #[default]
+    Full,
+    /// `<prefix>-YYYYmmdd-HHMMSS.snap/`: неизменённые файлы — жёсткие ссылки на предыдущий снимок.
+    Incremental,
+}
+
+impl BackupMode {
+    pub fn is_full(&self) -> bool {
+        *self == BackupMode::Full
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     /// Язык интерфейса: "ru", "en" или не задан — как в системе.
@@ -46,6 +63,13 @@ pub struct ServerConfig {
     pub backup_dir: String,
     #[serde(default = "d_backup_keep")]
     pub backup_keep: usize,
+    /// "full" (архив .tar.gz, по умолчанию) или "incremental" (снимок с жёсткими ссылками).
+    #[serde(default, skip_serializing_if = "BackupMode::is_full")]
+    pub backup_mode: BackupMode,
+    /// Куда ещё копировать готовый бэкап: путь к папке (другой диск, NAS, папка Dropbox / iCloud /
+    /// Яндекс.Диска) или `rclone:<remote>:<path>`. Там тоже хранятся последние `backup_keep`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backup_copy_to: Vec<String>,
     /// Запускать сервер вместе с фоновой службой (при входе в систему).
     #[serde(default)]
     pub autostart: bool,
@@ -110,6 +134,8 @@ impl ServerConfig {
             backup_paths: d_backup_paths(),
             backup_dir: d_backup_dir(),
             backup_keep: d_backup_keep(),
+            backup_mode: BackupMode::Full,
+            backup_copy_to: vec![],
             autostart: false,
             backup_every_hours: 0,
             restart_times: vec![],
@@ -511,6 +537,32 @@ mod tests {
         assert_eq!(c.servers[0].backup_keep, 10);
         assert_eq!(c.servers[1].port, 25575);
         assert_eq!(c.servers[1].rcon_password().as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn backup_mode_and_copy_targets() {
+        let dir = std::env::temp_dir();
+        let base = format!("[[server]]\nname = \"A\"\nkind = \"local\"\ndir = {:?}\n", dir.display().to_string());
+        let c = Config::parse(&base).unwrap();
+        assert_eq!(c.servers[0].backup_mode, BackupMode::Full);
+        assert!(c.servers[0].backup_copy_to.is_empty());
+        // значения по умолчанию не пишутся в файл
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(!text.contains("backup_mode"));
+        assert!(!text.contains("backup_copy_to"));
+
+        let c = Config::parse(&format!(
+            "{base}backup_mode = \"incremental\"\nbackup_copy_to = [\"/Volumes/Disk/mc\", \"rclone:yadisk:mc\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(c.servers[0].backup_mode, BackupMode::Incremental);
+        assert_eq!(c.servers[0].backup_copy_to, vec!["/Volumes/Disk/mc", "rclone:yadisk:mc"]);
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(text.contains("backup_mode = \"incremental\""));
+        let again = Config::parse(&text).unwrap();
+        assert_eq!(again.servers[0].backup_mode, BackupMode::Incremental);
+        assert_eq!(again.servers[0].backup_copy_to.len(), 2);
+        assert!(Config::parse(&format!("{base}backup_mode = \"weird\"\n")).is_err());
     }
 
     #[test]

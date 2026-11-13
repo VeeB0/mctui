@@ -1,6 +1,7 @@
 mod access;
 mod app;
 mod backup;
+mod backup_copy;
 mod client;
 mod complete;
 mod config;
