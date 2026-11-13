@@ -1,3 +1,5 @@
+#[allow(dead_code)] // подключается к интерфейсу отдельно
+mod access;
 mod app;
 mod backup;
 mod config;
