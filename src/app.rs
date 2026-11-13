@@ -94,6 +94,7 @@ pub enum Action {
 pub enum Opt {
     Autostart,
     AutoRestart,
+    Notify,
     BackupEvery,
     BackupKeep,
     RestartTimes,
@@ -105,6 +106,7 @@ impl Opt {
         match self {
             Opt::Autostart => tr!("Запускать вместе со службой", "Start with the service"),
             Opt::AutoRestart => tr!("Авто-рестарт при падении", "Restart after a crash"),
+            Opt::Notify => tr!("Уведомления рабочего стола", "Desktop notifications"),
             Opt::BackupEvery => tr!("Авто-бэкап, каждые N ч (0 — выкл)", "Auto backup every N h (0 = off)"),
             Opt::BackupKeep => tr!("Хранить бэкапов", "Backups to keep"),
             Opt::RestartTimes => tr!("Рестарт по расписанию (ЧЧ:ММ, …)", "Scheduled restarts (HH:MM, …)"),
@@ -643,7 +645,15 @@ impl App {
     /// Строки настроек mctui над server.properties.
     pub fn opts(&self) -> Vec<Opt> {
         if self.has_server() && self.sel().is_local() {
-            vec![Opt::Autostart, Opt::AutoRestart, Opt::BackupEvery, Opt::BackupKeep, Opt::RestartTimes, Opt::Language]
+            vec![
+                Opt::Autostart,
+                Opt::AutoRestart,
+                Opt::Notify,
+                Opt::BackupEvery,
+                Opt::BackupKeep,
+                Opt::RestartTimes,
+                Opt::Language,
+            ]
         } else {
             vec![Opt::Language]
         }
@@ -655,6 +665,7 @@ impl App {
         match o {
             Opt::Autostart => yes_no(c.autostart),
             Opt::AutoRestart => yes_no(c.auto_restart),
+            Opt::Notify => yes_no(c.notify),
             Opt::BackupEvery => c.backup_every_hours.to_string(),
             Opt::BackupKeep => c.backup_keep.to_string(),
             Opt::RestartTimes => {
@@ -685,6 +696,7 @@ impl App {
         match o {
             Opt::Autostart => self.update_cfg(|c| c.autostart = !c.autostart),
             Opt::AutoRestart => self.update_cfg(|c| c.auto_restart = !c.auto_restart),
+            Opt::Notify => self.update_cfg(|c| c.notify = !c.notify),
             Opt::Language => {
                 let next = match self.language.as_deref() {
                     None => Some("ru"),

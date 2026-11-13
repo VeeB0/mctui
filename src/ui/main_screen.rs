@@ -153,6 +153,7 @@ fn draw_sidebar(app: &App, f: &mut Frame, area: Rect) {
                 Span::styled(s.cfg.name.clone(), Style::new().fg(theme::TEXT)),
                 Span::styled(kind, Style::new().fg(theme::MUTED)),
                 Span::styled(players, Style::new().fg(theme::MUTED)),
+                Span::styled(if s.alerts.is_empty() { "" } else { " ⚠" }, Style::new().fg(theme::ERROR).bold()),
             ]))
         })
         .collect();
@@ -212,6 +213,9 @@ fn when(unix: i64) -> String {
 
 fn status_rows(s: &ServerUi) -> Vec<Row<'static>> {
     let mut rows = vec![kv(tr!("Состояние", "State"), s.status.label(), status_color(s.status))];
+    for (i, a) in s.alerts.iter().enumerate() {
+        rows.push(kv(if i == 0 { tr!("⚠ Внимание", "⚠ Warning") } else { "" }, a.clone(), theme::ERROR));
+    }
     match s.cfg.kind {
         Kind::Local => {
             rows.push(kv(tr!("Папка", "Folder"), s.cfg.dir().display().to_string(), theme::TEXT));

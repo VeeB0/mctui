@@ -45,6 +45,7 @@ pub struct Manager {
     tx: mpsc::UnboundedSender<AppEvent>,
     sys: Option<sysinfo::System>,
     last_history_save: Instant,
+    last_disk_check: Option<Instant>,
 }
 
 impl Manager {
@@ -63,6 +64,7 @@ impl Manager {
             tx,
             sys: sysinfo::System::new().ok(),
             last_history_save: Instant::now(),
+            last_disk_check: None,
         };
         for i in 0..m.servers.len() {
             m.load_history(i);
@@ -603,6 +605,12 @@ impl Manager {
             s.version = Some(v);
         }
         s.note_op_text(text);
+        if crate::alerts::is_oom_line(text)
+            && let Some(c) = s.alerts.note_oom(Instant::now())
+        {
+            self.apply_alert(idx, c);
+        }
+        let s = &mut self.servers[idx];
         match stats::player_event(text) {
             Some(PlayerEvent::Joined(n)) => {
                 s.players.insert(n);
@@ -665,6 +673,10 @@ impl Manager {
                         let d = s.cfg.restart_delay_secs;
                         s.status = Status::Restarting;
                         s.restart_at = Some(Instant::now() + Duration::from_secs(d));
+                        self.desktop(
+                            idx,
+                            &tr!(format!("упал ({status}), перезапуск"), format!("crashed ({status}), restarting")),
+                        );
                         self.notice(
                             tr!(
                                 format!("{name} упал ({status}), перезапуск через {d} с"),
@@ -675,6 +687,13 @@ impl Manager {
                     }
                     crate::server::supervisor::Decision::GiveUp => {
                         s.crash_gave_up = true;
+                        self.desktop(
+                            idx,
+                            tr!(
+                                "падает слишком часто — авто-рестарт остановлен",
+                                "keeps crashing — auto-restart stopped"
+                            ),
+                        );
                         self.log(
                             idx,
                             tr!(
@@ -692,6 +711,7 @@ impl Manager {
                     }
                 }
             } else {
+                self.desktop(idx, &tr!(format!("завершился: {status}"), format!("exited: {status}")));
                 self.notice(
                     tr!(format!("{name} завершился: {status}"), format!("{name} exited: {status}")),
                     NoticeKind::Error,
@@ -957,10 +977,86 @@ impl Manager {
             self.run_schedules(i);
         }
         self.refresh_resources();
+        self.check_alerts(now);
         self.take_samples(now);
         if now.duration_since(self.last_history_save) >= HISTORY_SAVE_EVERY {
             self.last_history_save = now;
             self.save_history();
+        }
+    }
+
+    /// Предупреждения о нагрузке: TPS, свободная память компьютера, место на диске, OOM.
+    fn check_alerts(&mut self, now: Instant) {
+        use crate::alerts::{self, Kind};
+        let watched = |s: &ServerState| {
+            (s.proc.is_some() && s.status == Status::Running)
+                || (s.cfg.kind == crate::config::Kind::Rcon && s.status == Status::Online)
+        };
+        if !self.servers.iter().any(watched) {
+            return;
+        }
+        let (avail, total) = match &mut self.sys {
+            Some(sys) => {
+                sys.refresh_memory();
+                (sys.available_memory(), sys.total_memory())
+            }
+            None => (0, 0),
+        };
+        let disks = if self.last_disk_check.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(30)) {
+            self.last_disk_check = Some(now);
+            sysinfo::Disks::new_with_refreshed_list().ok()
+        } else {
+            None
+        };
+        for i in 0..self.servers.len() {
+            let s = &mut self.servers[i];
+            if !watched(s) {
+                continue;
+            }
+            let mut changes = vec![];
+            if let Some(t) = s.tps {
+                let bad = alerts::tps_bad(t[0], s.alerts.is_active(Kind::LowTps));
+                changes.extend(s.alerts.observe(Kind::LowTps, bad, now));
+            }
+            if s.proc.is_some() {
+                changes.extend(s.alerts.observe(Kind::LowMemory, alerts::memory_bad(avail, total), now));
+                if let (Some(d), Some(dir)) = (&disks, &s.cfg.dir)
+                    && let Some(free) = disk_free(d, dir)
+                {
+                    changes.extend(s.alerts.observe(Kind::LowDisk, free < alerts::DISK_LOW_BYTES, now));
+                }
+                changes.extend(s.alerts.expire_oom(now));
+            }
+            for c in changes {
+                self.apply_alert(i, c);
+            }
+        }
+    }
+
+    fn apply_alert(&mut self, i: usize, change: crate::alerts::Change) {
+        use crate::alerts::Change;
+        let name = self.servers[i].cfg.name.clone();
+        match change {
+            Change::Raised(k) => {
+                let text = k.text();
+                self.log(i, &format!("mctui: ⚠ {text}"));
+                self.notice(format!("{name}: {text}"), NoticeKind::Error);
+                if self.servers[i].alerts.should_notify(k, Instant::now()) {
+                    self.desktop(i, &text);
+                }
+            }
+            Change::Cleared(k) => {
+                let text = k.text();
+                self.log(i, &tr!(format!("mctui: ✓ прошло: {text}"), format!("mctui: ✓ cleared: {text}")));
+            }
+        }
+    }
+
+    /// Уведомление рабочего стола от имени сервера (если `notify` включён).
+    fn desktop(&self, i: usize, body: &str) {
+        let s = &self.servers[i];
+        if s.cfg.notify && std::env::var_os("MCTUI_NO_NOTIFY").is_none() {
+            crate::alerts::desktop(&format!("mctui · {}", s.cfg.name), body);
         }
     }
 
@@ -1058,6 +1154,16 @@ impl Manager {
             }
         }
     }
+}
+
+/// Свободное место на диске, где лежит `dir` (самая длинная подходящая точка монтирования).
+fn disk_free(disks: &sysinfo::Disks, dir: &std::path::Path) -> Option<u64> {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    disks
+        .iter()
+        .filter(|d| dir.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
 }
 
 /// Ближайшее будущее время из списка (час, минута) — сегодня или завтра.

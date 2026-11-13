@@ -49,6 +49,9 @@ pub struct ServerConfig {
     /// Запускать сервер вместе с фоновой службой (при входе в систему).
     #[serde(default)]
     pub autostart: bool,
+    /// Уведомления рабочего стола о падениях и предупреждениях (TPS, память, диск).
+    #[serde(default = "d_true", skip_serializing_if = "is_true")]
+    pub notify: bool,
     /// Авто-бэкап каждые N часов, пока сервер работает (0 — выключен).
     #[serde(default)]
     pub backup_every_hours: u32,
@@ -71,6 +74,9 @@ pub struct ServerConfig {
 
 fn d_command() -> Vec<String> {
     if cfg!(windows) { vec!["cmd".into(), "/C".into(), "start.bat".into()] } else { vec!["./start.sh".into()] }
+}
+fn is_true(b: &bool) -> bool {
+    *b
 }
 fn d_true() -> bool {
     true
@@ -111,6 +117,7 @@ impl ServerConfig {
             backup_dir: d_backup_dir(),
             backup_keep: d_backup_keep(),
             autostart: false,
+            notify: true,
             backup_every_hours: 0,
             restart_times: vec![],
             host: d_host(),

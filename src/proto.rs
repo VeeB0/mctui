@@ -121,6 +121,9 @@ pub struct ServerView {
     pub next_backup_unix: Option<i64>,
     pub next_restart_unix: Option<i64>,
     pub crash_gave_up: bool,
+    /// Активные предупреждения (низкий TPS, память, диск…).
+    #[serde(default)]
+    pub alerts: Vec<String>,
 }
 
 impl ServerView {

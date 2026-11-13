@@ -105,6 +105,7 @@ pub struct ServerState {
     pub pending_restore: Option<(std::path::PathBuf, bool)>,
     pub restoring: bool,
     pub crash_gave_up: bool,
+    pub alerts: crate::alerts::Tracker,
 }
 
 impl ServerState {
@@ -153,6 +154,7 @@ impl ServerState {
             pending_restore: None,
             restoring: false,
             crash_gave_up: false,
+            alerts: Default::default(),
         };
         s.reload_props();
         s.reload_ops();
@@ -205,6 +207,7 @@ impl ServerState {
             next_backup_unix: self.next_backup.map(|t| t.timestamp()),
             next_restart_unix: self.next_restart.map(|t| t.timestamp()),
             crash_gave_up: self.crash_gave_up,
+            alerts: self.alerts.active().into_iter().map(|k| k.text()).collect(),
         }
     }
 
@@ -260,5 +263,6 @@ impl ServerState {
         self.started_at = None;
         self.started_unix = None;
         self.stop_deadline = None;
+        self.alerts.reset();
     }
 }
