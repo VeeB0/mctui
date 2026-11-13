@@ -340,6 +340,8 @@ impl Manager {
             paths: s.cfg.backup_paths.clone(),
             backup_dir: s.cfg.backup_dir(),
             keep: s.cfg.backup_keep,
+            mode: s.cfg.backup_mode,
+            copy_to: s.cfg.backup_copy_to.clone(),
             live: s.proc.as_ref().map(|p| (p.stdin(), p.lines.subscribe())),
         };
         s.backup_progress = Some(
