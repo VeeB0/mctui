@@ -215,6 +215,7 @@ impl App {
         };
         let what = match target.kind() {
             crate::plugins::PluginKind::Plugin => tr!("плагинов", "plugins"),
+            crate::plugins::PluginKind::Datapack => tr!("датапаков", "datapacks"),
             _ => tr!("модов", "mods"),
         };
         let ver = target.game_version.clone().map(|v| format!(" {v}")).unwrap_or_default();

@@ -32,6 +32,8 @@ const UNKNOWN_MOD_LOADERS: &[&str] = &["fabric", "quilt"];
 pub enum PluginKind {
     Plugin,
     Mod,
+    /// Датапак мира (`<мир>/datapacks/`); в `plugins::scan` не встречается — см. `datapacks`.
+    Datapack,
 }
 
 /// Откуда взяты метаданные — по нему выбираются загрузчики для запроса к Modrinth.
@@ -79,6 +81,7 @@ impl PluginInfo {
             (_, MetaFormat::NeoForge) => NEOFORGE_LOADERS,
             (PluginKind::Plugin, MetaFormat::Unknown) => PLUGIN_LOADERS,
             (PluginKind::Mod, MetaFormat::Unknown) => UNKNOWN_MOD_LOADERS,
+            (PluginKind::Datapack, MetaFormat::Unknown) => crate::datapacks::DATAPACK_LOADERS,
         }
     }
 }
@@ -723,16 +726,21 @@ pub(crate) fn check_hashes_with(
     Ok(out)
 }
 
-/// Имя файла из Modrinth должно быть простым `*.jar` без путей.
-pub(crate) fn safe_jar_name(name: &str) -> Result<&str> {
+/// Имя файла из Modrinth должно быть простым `*<ext>` (`.jar` / `.zip`) без путей.
+pub(crate) fn safe_file_name<'a>(name: &'a str, ext: &str) -> Result<&'a str> {
     let ok = !name.is_empty()
         && !name.starts_with('.')
         && !name.contains(['/', '\\', ':', '\0'])
-        && name.to_ascii_lowercase().ends_with(".jar");
+        && name.to_ascii_lowercase().ends_with(ext);
     if !ok {
         bail!(crate::tr!(format!("недопустимое имя файла: {name}"), format!("invalid file name: {name}")));
     }
     Ok(name)
+}
+
+/// Имя файла из Modrinth должно быть простым `*.jar` без путей.
+pub(crate) fn safe_jar_name(name: &str) -> Result<&str> {
+    safe_file_name(name, ".jar")
 }
 
 /// Скачивает новый jar во временный файл в той же папке, проверяет SHA-1, переносит старый jar в
